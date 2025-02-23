@@ -48,6 +48,7 @@ CONSTANT: server-capabilities
         { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
         { "textDocumentSync" 1 } ! FULL
+        ! { "executeCommandProvider" H{ { "commands" { "apropos" } } } }
     }
 
 CONSTANT: server-info H{ { "name" "factor-lsp" } { "version" "0.0.1" } }
