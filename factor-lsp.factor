@@ -1,11 +1,13 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
-USING: kernel json sequences math.parser unicode classes vocabs classes.parser accessors arrays calendar continuations io.files io.servers io.streams.c io.encodings.utf8 assocs quotations io math classes.predicate literals urls parser words generic hashtables strings factor-lsp.types summary tools.completion io.backend.unix source-files.errors source-files effects prettyprint math.order io.ports destructors io.encodings splitting tools.continuations factor-lsp.help help.topics namespaces vocabs.refresh make io.streams.string concurrency.futures vocabs.loader io.pathnames stack-checker.errors ;
+USING: kernel json sequences math.parser unicode classes vocabs classes.parser accessors arrays calendar continuations io.files io.servers io.streams.c io.encodings.utf8 assocs quotations io math classes.predicate literals urls parser words generic hashtables strings factor-lsp.types summary tools.completion io.backend.unix source-files.errors source-files effects prettyprint math.order io.ports destructors io.encodings splitting tools.continuations factor-lsp.help io.encodings.string prettyprint.config byte-arrays help.topics namespaces vocabs.refresh make io.streams.string concurrency.futures vocabs.loader io.pathnames stack-checker.errors ;
 IN: factor-lsp
 
 GENERIC: lsp-reply ( server request -- server )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
 ERROR: not-implemented-yet ;
+ERROR: lsp-unexpected-eof ;
+ERROR: lsp-unreachable msg ;
 SYMBOL: lsp-should-log?
 
 : log-lsp ( string -- ) lsp-should-log? get [ "~/lsp.log" utf8 [ now [ "[" write hour>> pprint ] [ ":" write minute>> pprint "]" write ] bi print ] with-file-appender ] [ drop ] if ;
@@ -45,7 +47,7 @@ CONSTANT: server-capabilities
         ! { "implementationProvider" f } ! for now
         ! { "referencesProvider" f } ! for now
         { "signatureHelpProvider" H{ } }
-        { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
+        ! { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
         { "textDocumentSync" 1 } ! FULL
         ! { "executeCommandProvider" H{ { "commands" { "apropos" } } } }
@@ -61,14 +63,36 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : respond ( response -- ) create-lsp-message [ log-lsp ] [ write ] bi flush ;
 
-: read-lsp-message ( start -- remainder obj ) 
-    "i'm waiting" log-lsp f swap
+: byte-length ( str -- len ) utf8 encode length ;
+
+: byte-read ( n -- str ) input-stream get dup decoder? [ stream>> stream-read utf8 decode ] [ stream-read ] if ;
+
+: read-check ( n -- string complete? ) dup byte-read tuck length = ;
+! start + "Content-Length: " + num + "\r\n" + rest + actually-read
+
+: log-byte-array ( byte-array prefix -- ) [ utf8 decode [ unparse ] without-limits ] dip prepend log-lsp ;
+
+: byte-cut ( str i -- before after ) [ utf8 encode ] dip cut [ utf8 decode ] bi@ ;
+
+: byte-cut* ( str i -- before after ) [ utf8 encode ] dip cut* [ utf8 decode ] bi@ ;
+
+: read-lsp-message ( start -- remainder obj/f ) 
+    dup [ unparse ] without-limits "start: " prepend log-lsp readln "\r\n" append append dup [ unparse ] without-limits "input-full: " prepend log-lsp dup "Content-Length: " subseq-index
     [ 
-        readln append [ 
-            dup "Content-Length: " subseq-index 
-            [ tail nip dup log-lsp "Content-Length: " length tail dec> [ not-implemented-yet ] unless* 2 + read dup log-lsp f ] [ drop t ] if* 
-        ] [ t ] if*
-    ] curry loop CHAR: } over last-index 1 + cut swap json> assoc>> [ obj>> last ] assoc-map ;
+       "Content-Length: " length + cut dup "\r\n" subseq-index [ "there should always be a \\r\\n" lsp-unreachable ] unless*
+        cut over [ append "\r\n" append ] 2dip dec> [ 2 cut swap dup "\r\n" = [ drop ] [ unparse " should equal \\r\\n" append lsp-unreachable ] if ] dip
+        [ 
+            over byte-length - dup 0 < [ nipd -1 * 2 - byte-cut* swap ] 
+            [ 2 read dup "\r\n" = 
+                [ drop "" swap ] [ swap ] if read-check [ append dup [ unparse ] without-limits "read: " prepend log-lsp append ] dip [ nip f swap ] [ append f ] if ] if
+        ]
+        [ nip f ] if* 
+        [ 
+            swap [ append ] when* CHAR: } over last-index 1 + cut swap [ dup [ unparse ] without-limits "remainder: " prepend log-lsp dup byte-length >dec "overread: " prepend log-lsp ] 
+            [ dup [ unparse ] without-limits "result: " prepend log-lsp ] bi* json> assoc>> [ obj>> last ] assoc-map 
+        ] [ f ] if* 
+    ] 
+    [ f ] if* ;
 ! stolen from splitting.private
 : linebreak? ( ch -- ? )
     dup 31 <
@@ -123,7 +147,9 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 : vocabulary-of-file ( string -- vocab-name/f ) dup "IN: " subseq-index [ 4 + tail 0 get-next-word ] [ drop f ] if* ;
 
 : load-file ( full-file-text -- ) 
-    vocabulary-of-file [ [ require ] keep refresh ] [ 2 "failed to load file because of: " rot unparse append send-message drop ] recover ;
+    [ 
+        vocabulary-of-file [ [ require ] [ refresh ] [ "loaded vocabulary: " prepend 3 swap send-message ] tri ] [ 2 "failed to load file because of: " rot unparse append send-message drop ] recover 
+    ] curry future drop ;
 
 : (send-diagnostics) ( errors -- diagnostics ) [ 
         [ error-line full-line-range "range" ] 
@@ -147,8 +173,8 @@ M: lsp-server errors-changed
 : lsp-server-run ( do-logging? -- ) 
         dup [ "~/lsp.log" utf8 [ "" write ] with-file-writer ] when lsp-should-log?
         [ 
-            [ 
-                "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer "" [ read-lsp-message swapd lsp-reply swap t ] loop 2drop 
+            [
+                "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer "" [ read-lsp-message [ swapd lsp-reply swap t ] [ t ] if* ] loop 2drop 
             ] 
             [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp rethrow ] recover 
         ] with-variable ;

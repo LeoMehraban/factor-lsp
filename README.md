@@ -155,11 +155,13 @@ vim.api.nvim_create_autocmd('FileType', {
 					    ["textDocument/signatureHelp"] = function(err, result, ctx, config)
 						    if result then
 							    local signature = result.signatures[1].documentation.value
-							    local bufnr, winnr = vim.lsp.util.open_floating_preview({signature}, "markdown")
-							    vim.api.nvim_set_option_value("modifiable", true, {buf=bufnr})
-							    vim.api.nvim_win_call(winnr, function() vim.treesitter.stop(bufnr) end)
-							    vim.lsp.util.stylize_markdown(bufnr, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), {})
-							    vim.api.nvim_set_option_value("modifiable", false, {buf=bufnr})
+                                if signature then
+							        local bufnr, winnr = vim.lsp.util.open_floating_preview({signature}, "markdown")
+							        vim.api.nvim_set_option_value("modifiable", true, {buf=bufnr})
+							        vim.api.nvim_win_call(winnr, function() vim.treesitter.stop(bufnr) end)
+							        vim.lsp.util.stylize_markdown(bufnr, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), {})
+							        vim.api.nvim_set_option_value("modifiable", false, {buf=bufnr})
+                                end
 						    end
 					    end
 				    }

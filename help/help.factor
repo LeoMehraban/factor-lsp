@@ -28,6 +28,7 @@ GENERIC: link-address ( article-name -- link )
 M: string link-address "https://docs.factorcode.org/content/article-" prepend ".html" append ;
 M: vocab link-address name>> "https://docs.factorcode.org/content/vocab-" prepend ".html" append  ;
 M: word link-address [ name>> "https://docs.factorcode.org/content/word-" prepend ] [ vocabulary>> "," prepend ] bi ".html" append append ;
+M: f link-address drop "https://docs.factorcode.org/content/word-f,syntax.html" ;
 
 : (article>markdown) ( article-seq -- markdown ) dollarsign-hash [ element>markdown ] with-replacements ; inline
  
