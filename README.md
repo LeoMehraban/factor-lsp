@@ -11,9 +11,9 @@ Installing this LSP requires the [factor programming language](https://factorcod
 
 - At the moment, code completion is theoretically supported (though I haven't managed to test this because of an unknown bug in my nvim config). 
 - In addition, there is hover support, which allows for quick and easy viewing of the stack effects of words.
-- The buggiest feature at the moment is diagnostics, which is practically unusable and very unreliable. Sorry.
+- The buggiest feature at the moment is diagnostics, which is practically unusable and very unreliable. When it works, it's nice at least
 - Perhaps the most useful feature is signature help, which is hooked up to the the factor help system, and thus allows you to get on-demand documentation for words in markdown format.
-- Currently go-to-definition support is missing, but it is planned
+- There is some basic go-to-definition support. factor makes this easy by storing where every word is defined, but there probably are still problems with this
 
 ## Problems
 
@@ -21,7 +21,6 @@ Oh god, where do I even start?
 - First of all, when you open a file, it takes several seconds for the LSP to load.
 - Diagnostics appear sometimes, but it's so unreliable that it's just annoying when it happens.
 - Editor support is hard to configure, and your editor's defaults probably won't work or won't work well.
-- Pulling up the documentation of a word takes several seconds unless you've loaded the documentation for that word before.
 - There are other problems, but since they are likely nvim-specific, I'll save those for the editor support section.
 
 ## Editor Support

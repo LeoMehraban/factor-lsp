@@ -1,21 +1,27 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
-USING: kernel json sequences math.parser unicode classes vocabs classes.parser accessors arrays calendar continuations io.files io.servers io.streams.c io.encodings.utf8 assocs quotations io math classes.predicate literals urls parser words generic hashtables strings factor-lsp.types summary tools.completion io.backend.unix source-files.errors source-files effects prettyprint math.order io.ports destructors io.encodings splitting tools.continuations factor-lsp.help io.encodings.string prettyprint.config byte-arrays help.topics namespaces vocabs.refresh make io.streams.string concurrency.futures vocabs.loader io.pathnames stack-checker.errors ;
+USING: kernel json sequences math.parser unicode classes vocabs classes.parser accessors arrays calendar continuations io.files io.servers io.streams.c io.encodings.utf8 assocs quotations io math classes.predicate literals urls parser words generic hashtables strings factor-lsp.types summary tools.completion io.backend.unix source-files.errors source-files effects prettyprint math.order io.ports destructors io.encodings splitting tools.continuations factor-lsp.help io.encodings.string prettyprint.config byte-arrays help.topics namespaces vocabs.refresh make io.streams.string concurrency.futures vocabs.loader io.pathnames stack-checker.errors help.apropos io.files.temp present combinators definitions ;
 IN: factor-lsp
 
 GENERIC: lsp-reply ( server request -- server )
+GENERIC: lsp-command-reply ( server id params command -- server result/f )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
 ERROR: not-implemented-yet ;
 ERROR: lsp-unexpected-eof ;
 ERROR: lsp-unreachable msg ;
 SYMBOL: lsp-should-log?
+SYMBOL: md-article-cache-count
+
 
 : log-lsp ( string -- ) lsp-should-log? get [ "~/lsp.log" utf8 [ now [ "[" write hour>> pprint ] [ ":" write minute>> pprint "]" write ] bi print ] with-file-appender ] [ drop ] if ;
 
 PREDICATE: lsp-notification < lsp-message "id" of not ;
+PREDICATE: lsp-response < lsp-message "result" of ;
+M: lsp-response lsp-reply drop ;
+
 
 GENERIC: concise-summary ( obj -- str )
-M: object concise-summary [ summary ": " append ] [ unparse ] bi append ;
+M: object concise-summary [ summary ": " append ] [ unparse ] bi append  ;
 M: effect-error concise-summary [ summary ": expected effect " append ] [ dup declared>> effect>string ", but inferred " append swap inferred>> effect>string append ] bi append ;
 ! obj last
 M: unbalanced-branches-error concise-summary [ [ summary % ": expected effect(s) " % ] keep
@@ -39,18 +45,26 @@ SYNTAX: LSP-NOTIF:
     \ ; parse-until >quotation define
     ;
 
+SYNTAX: LSP-COMMAND:
+    scan-new-class dup
+    string
+    scan-word-name [ = ] curry define-predicate-class
+    \ lsp-command-reply create-method
+    \ ; parse-until >quotation define
+    ;
+
 CONSTANT: server-capabilities 
     H{ 
         { "completionProvider" H{ { "labelDetailsSupport" t } } }
         ! { "declarationProvider" f } ! for now
-        ! { "definitionProvider" f } ! for now
+        { "definitionProvider" t } ! for now
         ! { "implementationProvider" f } ! for now
         ! { "referencesProvider" f } ! for now
         { "signatureHelpProvider" H{ } }
         ! { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
-        { "textDocumentSync" 1 } ! FULL
-        ! { "executeCommandProvider" H{ { "commands" { "apropos" } } } }
+        { "textDocumentSync" 2 } ! INCREMENTAL
+        ! { "executeCommandProvider" H{ { "commands" { "article" } } } }
     }
 
 CONSTANT: server-info H{ { "name" "factor-lsp" } { "version" "0.0.1" } }
@@ -172,12 +186,17 @@ M: lsp-server errors-changed
 
 : lsp-server-run ( do-logging? -- ) 
         dup [ "~/lsp.log" utf8 [ "" write ] with-file-writer ] when lsp-should-log?
+        ! "~/lsp.log" utf8 [ "" write ] with-file-writer lsp-should-log?
         [ 
             [
                 "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer "" [ read-lsp-message [ swapd lsp-reply swap t ] [ t ] if* ] loop 2drop 
             ] 
             [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp rethrow ] recover 
         ] with-variable ;
+! before-end start after-range
+: split-remove-range ( document range -- before-range after-range ) dupd [ "start" of pos>index ] [ "end" of pos>index ] 2bi swapd cut [ swap head ] dip ;
+
+: apply-change ( document new-text range -- document ) swapd split-remove-range rot prepend append ;
 
 MAIN: [ t lsp-server-run ]
 
@@ -192,10 +211,15 @@ LSP-METHOD: lsp-shutdown shutdown "id" of json-null json-null <lsp-response> res
 
 LSP-METHOD: lsp-exit exit not-implemented-yet ;
 
+LSP-METHOD: lsp-command workspace/executeCommand 
+    [ "id" of dup ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply [ json-null <lsp-response> respond ] [ drop ] if* ;
+
 LSP-NOTIF: lsp-open-doc textDocument/didOpen 
     "params" of "textDocument" of [ swap [ [ "text" of ] [ "uri" of dup >url path>> resource-path path>source-file unparse log-lsp ] bi over load-file ] dip set-at* ] curry change-documents ;
 
-LSP-NOTIF: lsp-did-change textDocument/didChange "params" of [ "contentChanges" of last "text" of ] [ "textDocument" of "uri" of ] bi [ rot set-at* ] 2curry change-documents ;
+LSP-NOTIF: lsp-did-change textDocument/didChange 
+    "params" of [ "contentChanges" of ] [ "textDocument" of "uri" of ] bi 
+    [ overd [ documents>> ] dip [ of swap [ "text" of ] [ "range" of ] bi apply-change ] keep [ rot set-at* ] 2curry change-documents ] curry each ;
 
 LSP-NOTIF: lsp-did-close textDocument/didClose "params" of "textDocument" of "uri" of [ f spin set-at* ] curry change-documents ;
 
@@ -213,6 +237,38 @@ LSP-METHOD: lsp-signature-help textDocument/signatureHelp
     [ swapd dupd [ swapd documents>> ] dip of ] dip [ get-current-word send-signatures ] 
     [ 3drop f ] if*
     ;
+! stop it, get some help
+: get-help ( name -- markdown/f ) 
+    { 
+        { [ dup words-matching length 0 > ] [ words-matching first article>markdown ] }
+        { [ dup vocabs-matching length 0 > ] [ vocabs-matching first article>markdown ] }
+        { [ dup articles-matching length 0 > ] [ articles-matching first article>markdown ] }
+        [ drop f ]
+    } cond
+    ;
+     
+: inc-md-article-cache-count ( -- str ) md-article-cache-count [ [ 0 ] initialize ] [ get dec> ] [ [ 1 + ] swap change ] tri ;
+
+! LSP-COMMAND: lsp-article article
+!    drop
+!    [ 
+!        unclip-last [ " " append ] map swap suffix concat get-help 
+!        [ 
+!            "markdown-article-" inc-md-article-cache-count append ".md" append 
+!            temp-file [ set-file-contents <url> ] keep >>path "file" >>protocol present "uri" associate "window/showMessage" swap
+!            [ 1 + ] 2dip <lsp-request> respond json-null
+!        ] 
+!        [ "unknown article" <lsp-invalid-params-error> json-null swap <lsp-response> respond f ] if* 
+!    ] 
+!    [ "usage: article <search-term>" <lsp-invalid-params-error> json-null swap <lsp-response> respond f ] if*
+!    ;
+! server id document position
+LSP-METHOD: lsp-text-document-definition textDocument/definition 
+    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
+    [ swapd dupd [ swapd documents>> ] dip of ] dip 
+        get-current-word first-word-with-name where 
+        [ first2 [ absolute-path "file://" prepend ] [ full-line-range ] bi* "range" associate [ "uri" ] dip set-at* ] [ json-null ] if* json-null <lsp-response> respond 
+        ;
 
 LSP-METHOD: lsp-text-document-completion textDocument/completion 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
