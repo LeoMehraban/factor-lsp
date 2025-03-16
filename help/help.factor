@@ -1,4 +1,4 @@
-USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units sequences.deep ;
+USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin classes.predicate classes.singleton classes.tuple classes.union help.vocabs namespaces ;
 IN: factor-lsp.help
 
 DEFER: md-$link
@@ -6,9 +6,12 @@ DEFER: md-$heading
 DEFER: md-$see
 DEFER: md-$see-also
 DEFER: md-$table
+DEFER: md-$words
 DEFER: md-$snippet
 DEFER: dollarsign-hash
-GENERIC: element>markdown ( element -- string )
+SYMBOL: link-prefix
+SYMBOL: link-suffix
+GENERIC: element>markdown ( element -- )
 
 ! : with-annotations ( words annotation-quot: ( word old-def -- new-def ) quot: ( ..a -- ..b ) -- ..b ) 
 !  rot [ [ [ dupd with (annotate) ] curry ] 2dip -rot [ [ each ] 2curry [ with-compilation-unit ] curry ] dip ] keep [ [ (reset) ] each ] curry 
@@ -16,78 +19,86 @@ GENERIC: element>markdown ( element -- string )
 
 ! MACRO: with-replacements ( assoc quot: ( ..a -- ..b ) -- quot: ( ..a -- ..b ) ) [ [ keys ] [ [ at def>> ] curry [ drop ] prepose ] bi ] dip [ with-annotations ] 3curry ;
 
-M: array element>markdown unclip [ ( arg -- ) execute-effect ] "" make ; inline
-M: effect element>markdown effect>string ; inline
-M: f element>markdown ; inline
-M: simple-element element>markdown [ element>markdown ] map concat ; inline
-M: string element>markdown ; inline
-M: word element>markdown [ { } swap ( arg -- ) execute-effect ] "" make ; inline
+M: array element>markdown unclip ( arg -- ) execute-effect ; inline
+M: effect element>markdown effect>string % ; inline
+M: f element>markdown % ; inline
+M: simple-element element>markdown [ element>markdown ] each ; inline
+M: string element>markdown % ; inline
+M: word element>markdown { } swap ( arg -- ) execute-effect ; inline
 
 GENERIC: link-address ( article-name -- link )
 
-M: string link-address "https://docs.factorcode.org/content/article-" prepend ".html" append ;
-M: vocab link-address name>> "https://docs.factorcode.org/content/vocab-" prepend ".html" append  ;
-M: word link-address [ name>> "https://docs.factorcode.org/content/word-" prepend ] [ vocabulary>> "," prepend ] bi ".html" append append ;
-M: f link-address drop "https://docs.factorcode.org/content/word-f,syntax.html" ;
+M: string link-address link-prefix get "/article-" append prepend link-suffix get append ;
+M: vocab-link link-address name>> link-prefix get "/vocab-" append prepend link-suffix get append ;
+M: vocab-prefix link-address name>> link-prefix get "/vocab-" append prepend link-suffix get append ;
+M: vocab link-address name>> link-prefix get "/vocab-" append prepend link-suffix get append  ;
+M: word link-address [ name>> link-prefix get "/word-" append prepend ] [ vocabulary>> "," prepend ] bi link-suffix get append append ;
+M: f link-address drop link-prefix get "/word-f,syntax" link-suffix get append append ;
 
-: help-word? ( word -- ? ) dup word? [ [ vocabulary>> [ "help" = ] [ "help.markup" = ] bi or ] [ name>> first CHAR: $ = ] bi and ] [ drop f ] if ;
+M: vocab-prefix article-title name>> ;
+
+: help-word? ( word -- ? ) dup word? [ [ vocabulary>> [ "help" = ] [ "help.markup" = ] [ "help.vocabs" = ] tri or or ] [ name>> first CHAR: $ = ] bi and ] [ drop f ] if ;
 
 : array-length-or-zero ( seq -- length ) dup array? [ length ] [ drop 0 ] if ;
 
-: (article>markdown) ( article-seq -- elts ) 
+: (article>markdown) ( article-seq -- elts )
+    link-prefix [ "https://docs.factorcode.org/content" ] initialize
+    link-suffix [ ".html" ] initialize
     [ dup array-length-or-zero 0 > [ unclip dup help-word? [ dollarsign-hash at ] when prefix ] when ] deep-map ; inline 
 
+MEMO: article>markdown ( article-name -- markdown )
+    [ article-content (article>markdown) ] keep [ article-name "# " prepend % element>markdown ] curry "" make ; inline
 
-MEMO: article>markdown ( article-name -- markdown ) [ article-content (article>markdown) element>markdown ] keep article-name "# " prepend "\n" append prepend ; inline
+: ?nl ( -- ) building get dup length 0 > [ last CHAR: \n = [ "\n" % ] unless ] [ drop "\n" % ] if ;
 
 : md-$breadcrumbs ( element -- ) dup length 0 > [ unclip-last [ "" [ [ 1array md-$link ] "" make " » " append append ] reduce ] dip [ 1array md-$link ] "" make append % ] [ drop ] if ;
-: md-$class-description ( element -- ) "Class Description" md-$heading element>markdown % ;
-: md-$code ( element -- ) "```factor\n" % element>markdown % "\n```\n" % ;
+: md-$class-description ( element -- ) "Class Description" md-$heading element>markdown ;
+: md-$code ( element -- ) ?nl "```factor\n" % element>markdown "\n```" % ;
 ! : md-$content ( element -- )  ;
-: md-$contract ( element -- ) "Generic word contract" md-$heading element>markdown % ;
-: md-$curious ( element -- ) "For the curious..." md-$heading element>markdown %  ;
+: md-$contract ( element -- ) "Generic word contract" md-$heading element>markdown ;
+: md-$curious ( element -- ) "For the curious..." md-$heading element>markdown  ;
 : md-$definition ( element -- ) "Definition" md-$heading md-$see ;
 : md-$definition-icons ( element -- ) drop ;
-: md-$deprecated ( element -- ) "Deprecated" md-$heading element>markdown split-lines [ "> " prepend "\n" append % ] each ;
-: md-$description ( element -- ) "Description" md-$heading element>markdown %  ;
-: md-$emphasis ( children -- ) "*" % element>markdown % "*" % ;
+: md-$deprecated ( element -- ) "Deprecated" md-$heading [ element>markdown ] "" make split-lines [ "> " prepend "\n" append % ] each ;
+: md-$description ( element -- ) "Description" md-$heading element>markdown  ;
+: md-$emphasis ( children -- ) "*" % element>markdown "*" % ;
 : md-$error-description ( element -- ) md-$description ;
-: md-$errors ( element -- ) "Errors" md-$heading element>markdown %  ;
-: md-$example ( element -- ) unclip-last [ join-lines ] dip "\n! prints:\n" prepend append md-$code ;
-: md-$examples ( element -- ) "Examples" md-$heading element>markdown %  ;
-: md-$heading ( element -- ) "\n\n## " % element>markdown % "\n" % ;
-: md-$image ( element -- ) drop "\n<image>\n" % ;
+: md-$errors ( element -- ) "Errors" md-$heading element>markdown  ;
+: md-$example ( element -- ) unclip-last [ join-lines ] dip "\n! prints:\n" prepend append md-$code ?nl ;
+: md-$examples ( element -- ) "Examples" md-$heading element>markdown ?nl ;
+: md-$heading ( element -- ) ?nl "## " % element>markdown ?nl ;
+: md-$image ( element -- ) drop "<image>\n" % ;
 : md-$inputs ( element -- ) "Inputs" md-$heading [ "None" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty ;
-: md-$instance ( element -- ) first dup name>> a/an % " " % 1array md-$link ;
+: md-$instance ( element -- ) first dup word? [ dup name>> a/an % " " % 1array md-$link ] [ element>markdown ] if ;
 : md-$io-error ( children -- ) drop "Throws an error if the I/O operation fails." md-$errors ;
 : md-$link ( element -- ) 
     first dup article-name "[" prepend "]" append % "(" % link-address % ")" % ;
 : md-$links ( topics -- ) dup length 0 > [ unclip-last [ "" [ [ 1array md-$link ] "" make ", " append append ] reduce ] dip [ 1array md-$link ] "" make append % ] [ drop ] if  ;
-: md-$list ( element -- ) [ "- " % element>markdown % "\n" % ] each ;
-: md-$long-link ( element -- ) first dup article-name "[" prepend % dup word? [ [ " " % stack-effect effect>string % ] [ name>> "](word:" % % ")" % ] bi ] [ "](article:" % % ")" % ] if  ;
+: md-$list ( element -- ) [ ?nl "- " % element>markdown ] each ?nl ;
+: md-$long-link ( element -- ) md-$link "\n" % ;
 : md-$low-level-note ( element -- ) drop "Notes" md-$heading "Calling this word directly is not necessary in most cases. Higher-level words call it automatically.\n" % ;
-: md-$markup-example ( element -- ) first dup unparse " print-element" append 1array md-$code element>markdown % ;
+: md-$markup-example ( element -- ) first dup unparse " print-element" append 1array md-$code element>markdown ;
 : md-$maybe ( element -- ) md-$instance " or " % \ f 1array md-$link ;
 : md-$methods ( element -- ) first methods [ "Methods" md-$heading [ [ see "\n" write ] each ] with-string-writer md-$code ] unless-empty ;
 : md-$nl ( element -- ) drop "\n" % ;
-: md-$notes ( element -- ) "Notes" md-$heading element>markdown % ;
+: md-$notes ( element -- ) "Notes" md-$heading element>markdown ;
 : md-$or ( element -- ) dup length 
     { 
         { 1 [ first md-$instance ] } 
-        { 2 [ first2 [ md-$instance " or " element>markdown % ] [ md-$instance ] bi* ] } 
+        { 2 [ first2 [ md-$instance " or " element>markdown ] [ md-$instance ] bi* ] } 
         [ drop unclip-last [ [ md-$instance ", " % ] each ] [ "or " % md-$instance ] bi* ]
     } case ;
 : md-$outputs ( element -- ) "Outputs" md-$heading [ "None" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty ;
 : md-$parsing-note ( element -- ) drop "This word should only be called from parsing words." md-$notes ;
 : md-$pretty-link ( element -- ) md-$link ;
 : md-$prettyprinting-note ( element -- ) drop { "This word should only be called from inside the " { $link with-pprint } " combinator." } md-$notes ;
-: md-$quotation ( element -- ) { "a " { $link quotation } " with stack effect " } element>markdown % md-$snippet ;
-: md-$references ( element -- ) "References" md-$heading unclip element>markdown % [ \ md-$link swap ] map>alist md-$list ;
+: md-$quotation ( element -- ) { "a " { $link quotation } " with stack effect " } element>markdown md-$snippet ;
+: md-$references ( element -- ) "References" md-$heading unclip element>markdown [ \ md-$link swap ] map>alist md-$list ;
 : md-$related ( element -- ) first dup "related" word-prop remove [ md-$see-also ] unless-empty ;
 : md-$see ( element -- ) first [ see ] with-string-writer md-$code ;
 : md-$see-also ( element -- ) "See also" md-$heading md-$links ;
 : md-$sequence ( element -- ) 
-    { "a " { $link sequence } " of " } element>markdown % dup length 
+    { "a " { $link sequence } " of " } element>markdown dup length 
     {
         { 1 [ md-$link "s" % ] }
         {
@@ -109,10 +120,10 @@ MEMO: article>markdown ( article-name -- markdown ) [ article-content (article>m
 : md-$side-effects ( element -- ) "Side effects" md-$heading "Modifies " % md-$snippet ;
 : md-$slot ( element -- ) md-$snippet ;
 : md-$slots ( element -- ) [ unclip \ md-$slot swap 2array prefix ] map md-$table ;
-: md-$snippet ( element -- ) "`" % element>markdown % "`" % ;
-: md-$strong ( element -- ) "**" % element>markdown % "**" % ;
-: md-$subheading ( element -- ) "### " % element>markdown % "\n" %  ;
-: md-$subsection ( element -- ) "\n" % md-$link "\n" % ;
+: md-$snippet ( element -- ) "`" % element>markdown "`" % ;
+: md-$strong ( element -- ) "**" % element>markdown "**" % ;
+: md-$subheading ( element -- ) "### " % element>markdown "\n" %  ;
+: md-$subsection ( element -- ) md-$link "\n" % ;
 : md-$subsection* ( element -- ) md-$subsection ;
 : md-$subsections ( element -- ) [ md-$subsection ] each ;
 : md-$synopsis ( element -- ) synopsis md-$code ;
@@ -120,31 +131,75 @@ MEMO: article>markdown ( article-name -- markdown ) [ article-content (article>m
 : md-$table ( element -- ) 
     dup length 0 > 
     [ 
-        reverse unclip-last 
         [ 
-            [ 
-                [ "| " % element>markdown % " " % ] each 
-                "|\n" % 
-            ] each 
-        ] dip 
-        [
-            "| " % element>markdown % " " % 
-        ] each
-        "| " % 
+            [ "| " % element>markdown " " % ] each 
+            "|\n" % 
+        ] each 
     ] 
     [ drop ] if ;
 : md-$unchecked-example ( element -- ) md-$example ;
 : md-$url ( element -- ) first >url unparse % ;
 : md-$value ( element -- ) drop ;
-: md-$values ( element -- ) "Inputs and outputs" md-$heading [ "\nNone\n" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty  ;
+: md-$values ( element -- ) "Inputs and outputs" md-$heading [ "None\n" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty  ;
 : md-$values-x/y ( element -- ) drop { { "x" number } { "y" number } } md-$values ;
 : md-$var-description ( element -- ) md-$description ;
-: md-$vocab-link ( element -- ) <vocab> 1array md-$link ;
-: md-$vocab-links ( element -- ) [ md-$vocab-link ] each ;
+: md-$vocab-link ( element -- ) first vocab-name <vocab> 1array md-$link ;
+: md-$vocab-links ( element -- ) [ md-$vocab-link "\n" % ] each ;
 : md-$vocab-subsection ( element -- ) vocab-help md-$subsection ;
-: md-$vocab-subsections ( element -- ) [ "\n" % md-$vocab-subsection "\n" % ] each ;
-: md-$vocabulary ( element -- ) first vocabulary>> "Vocabulary" md-$heading md-$vocab-link ;
-: md-$warning ( element -- ) "Warning" md-$heading element>markdown split-lines [ "> " prepend "\n" append % ] each  ;
+: md-$vocab-subsections ( element -- ) [ md-$vocab-subsection "\n" % ] each ;
+: md-$vocab-roots ( element -- ) [ [ drop ] [ [ [ "Children from " prepend ] [ "Children" ] if* md-$heading ] [ md-$vocab-link ] bi* ] if-empty ] assoc-each ;
+: md-vocab-words ( vocab -- ) { { [ dup lookup-vocab ] [ vocab-words md-$words ] } { [ dup find-vocab-root ] [ [ load-vocab drop ] keep md-vocab-words ] } [ drop ] } cond  ;
+: md-$vocab ( element -- ) first { 
+        [ dup vocab-help [ "Documentation" md-$heading nip 1array md-$long-link ] [ "Summary" md-$heading vocab-summary % ] if* ]
+        [ md-vocab-words ]
+        [ vocab-name disk-vocabs-for-prefix md-$vocab-roots ]
+    } cleave ;
+: md-$vocabulary ( element -- ) first vocabulary>> "Vocabulary" md-$heading 1array md-$vocab-link ;
+: md-$warning ( element -- ) "Warning" md-$heading [ element>markdown ] "" make split-lines [ "> " prepend "\n" append % ] each  ;
+: md-list-words ( words name -- ) over length 0 > [ md-$subheading [ [ \ md-$link swap 2array ] [ stack-effect effect>string \ md-$snippet swap 2array ] bi 2array ] map md-$table ] [ 2drop ] if ;
+: md-list-classes-with-slots ( classes name -- ) 
+    over length 0 > 
+    [ 
+        md-$subheading 
+        [ [ \ md-$link swap 2array ] [ superclass-of \ md-$link swap 2array ] [ all-slots [ name>> " " append ] map concat 1 head* \ md-$snippet swap 2array ] tri 3array ] map md-$table 
+    ] 
+    [ 2drop ] if ;
+: md-list-classes-without-slots ( classes name -- )  
+    over length 0 > 
+    [ md-$subheading [ [ \ md-$link swap 2array ] [ superclass-of \ md-$link swap 2array ] bi 2array ] map md-$table ] 
+    [ 2drop ] if  ;
+: md-$classes ( element -- )
+    [ builtin-class? ] partition [ tuple-class? ] partition
+    [ singleton-class? ] partition
+    [ predicate-class? ] partition [ mixin-class? ] partition
+    [ union-class? ] partition [ intersection-class? ] filter {
+        [ "Builtin classes" md-list-classes-with-slots ]
+        [ "Tuple classes" md-list-classes-with-slots ]
+        [ "Singleton classes" md-list-classes-without-slots ]
+        [ "Predicate classes" md-list-classes-without-slots ]
+        [ "Mixin classes" md-list-classes-without-slots ]
+        [ "Union classes" md-list-classes-without-slots ]
+        [ "Intersection classes" md-list-classes-without-slots ]
+    } spread
+    ;
+: md-$words ( element -- ) 
+    "Words" md-$heading sort
+    [ [ class? ] filter md-$classes ] [
+            [ [ class? ] [ symbol? ] bi and ] reject
+            [ parsing-word? ] partition [ generic? ] partition
+            [ macro? ] partition [ symbol? ] partition
+            [ primitive? ] partition
+            [ predicate? ] partition swap {
+                [ "Parsing words" md-list-words ]
+                [ "Generic words" md-list-words ]
+                [ "Macros" md-list-words ]
+                [ "Symbol words" md-list-words ]
+                [ "Primatives" md-list-words ]
+                [ "Regular words" md-list-words ]
+                [ "Predicate words" md-list-words ]
+            } spread
+    ] bi
+    ;
 <<
 CONSTANT: dollarsign-hash
     H{ 
@@ -194,6 +249,9 @@ CONSTANT: dollarsign-hash
         { $image md-$image }
         { $io-error md-$io-error }
         { $vocab-link md-$vocab-link }
+        { $vocab md-$vocab }
+        { $vocab-roots md-$vocab-roots }
+        { $words md-$words }
         { $vocab-subsection md-$vocab-subsection }
         { $subsection md-$subsection }
         { $synopsis md-$synopsis }

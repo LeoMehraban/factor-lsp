@@ -9,7 +9,7 @@ Installing this LSP requires the [factor programming language](https://factorcod
 
 ## Features
 
-- At the moment, code completion is theoretically supported (though I haven't managed to test this because of an unknown bug in my nvim config). 
+- At the moment, code completion is supported 
 - In addition, there is hover support, which allows for quick and easy viewing of the stack effects of words.
 - The buggiest feature at the moment is diagnostics, which is practically unusable and very unreliable. When it works, it's nice at least
 - Perhaps the most useful feature is signature help, which is hooked up to the the factor help system, and thus allows you to get on-demand documentation for words in markdown format.
@@ -34,6 +34,7 @@ vim.api.nvim_create_autocmd('FileType', {
       		callback = function(ev)
                 local client = vim.lsp.start { 
 			    	cmd = {'path/to/factor', '-run=factor-lsp'},
+                    root_dir = '/', -- just always re-use client. there's no workspace support yet anyway, so seperate processes are never needed
 				    name = 'factor-lsp',
 				    offset_encoding = 'utf-8',
 			    }
@@ -44,95 +45,13 @@ vim.api.nvim_create_autocmd('FileType', {
 })
 ```
 
-There are two major problems with this: 
-- first of all, whenever you open a new factor file, regardless of whether it's in the same directory as the first factor file you opened, a new lsp process will have to be started
-- and secondly, code blocks in markdown that have been sent over by the LSP will not display with factor syntax highlighting, which is annoying for both hovering and signature help
+There is a minor problems with just having this: code blocks in markdown that have been sent over by the LSP will not display with factor syntax highlighting, which is annoying for both hovering and signature help
 
-the solution to both requires extensive configuration
+the solution to this requires extensive configuration
 
-#### Problem One
+#### The solution to that
 
-problem one can be solved with the `root_dir` option, which allows you to specify a directory in which nvim will re-use existing LSP clients. I wrote a very long function to solve this:
-
-```lua
--- from https://stackoverflow.com/questions/1426954/split-string-in-lua
-function mysplit(inputstr, sep)
-  if sep == nil then
-    sep = "%s"
-  end
-  local t = {}
-  for str in string.gmatch(inputstr, "([^"..sep.."]+)") do
-    table.insert(t, str)
-  end
-  return t
-end
-
-
-function find_factor_folder(path)
-	path = vim.fs.normalize(path)
-	local factorroots = os.getenv("FACTOR_ROOTS") or ''
-	local seperator = ':'
-	if vim.fn['has']("win32") then
-		seperator = ';'
-	end
-	local default_factor_root = vim.fs.root(path, 'factor.image')
-	if default_factor_root then
-		if #factorroots > 0 then factorroots = factorroots .. seperator end
-		factorroots = 
-			factorroots
-			.. default_factor_root .. '/work' .. seperator 
-			.. default_factor_root .. '/core' .. seperator 
-			.. default_factor_root .. '/basis' .. seperator
-			.. default_factor_root .. '/extra' .. seperator
-	end
-	local roots = mysplit(factorroots, seperator)
-	local i = 1
-	local path_to_test = path
-	local last_folder_name = ""
-	while true do
-		if (path_to_test == "/") or (path_to_test == 'C:/') then
-			path_to_test = path
-			last_folder_name = ""
-			i = i + 1
-		elseif i > #roots then
-			return nil
-		elseif path_to_test == roots[i] then
-			return path_to_test .. '/' .. last_folder_name
-		else
-			last_folder_name = vim.fs.basename(path_to_test)
-			path_to_test = vim.fs.dirname(path_to_test)
-		end
-	end
-end
-
-```
-
-I relize now that this was probably overkill, but I'm not gonna re-write it. It also probabably doesn't work on windows. Use a better operating system next time /j. What this does is it searches for a factor vocabulary root that contains this path, and returns the pathname of the folder right below it. 
-So if you're in the directory path/to/factor/work/factor-lsp/help/blahblahblah, it will return path/to/factor/work/factor-lsp
-
-You can now plug this into your lsp initializer like so:
-
-```lua
-vim.api.nvim_create_autocmd('FileType', {
-      	pattern = 'factor',
-      	callback = function(ev)
-			local client = vim.lsp.start { 
-				cmd = {"path/to/factor", '-run=factor-lsp'},
-				root_dir = find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)),
-				name = 'factor-lsp',
-				offset_encoding = 'utf-8',
-			}
-			if client then
-				vim.lsp.buf_attach_client(ev.buf, client)
-			end
-		end,
-})
-
-```
-
-#### Problem Two
-
-To some extent, problem two can be solved with a simple revision to the call to vim.lsp.start:
+To some extent, this problem can be solved with a simple revision to the call to vim.lsp.start:
 ```lua
 vim.api.nvim_create_autocmd('FileType', {
       		pattern = 'factor',
