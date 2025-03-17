@@ -1,4 +1,4 @@
-USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin classes.predicate classes.singleton classes.tuple classes.union help.vocabs namespaces ;
+USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin help classes.predicate classes.singleton classes.tuple classes.union help.vocabs namespaces ;
 IN: factor-lsp.help
 
 DEFER: md-$link
@@ -7,6 +7,7 @@ DEFER: md-$see
 DEFER: md-$see-also
 DEFER: md-$table
 DEFER: md-$words
+DEFER: md-$values
 DEFER: md-$snippet
 DEFER: dollarsign-hash
 SYMBOL: link-prefix
@@ -90,6 +91,10 @@ MEMO: article>markdown ( article-name -- markdown )
     } case ;
 : md-$outputs ( element -- ) "Outputs" md-$heading [ "None" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty ;
 : md-$parsing-note ( element -- ) drop "This word should only be called from parsing words." md-$notes ;
+: md-$predicate ( element --  ) { { "object" object } { "?" boolean } } md-$values [
+        "Tests if the object is an instance of the " ,
+        first "predicating" word-prop \ md-$link swap 2array , " class." ,
+    ] { } make md-$description ;
 : md-$pretty-link ( element -- ) md-$link ;
 : md-$prettyprinting-note ( element -- ) drop { "This word should only be called from inside the " { $link with-pprint } " combinator." } md-$notes ;
 : md-$quotation ( element -- ) { "a " { $link quotation } " with stack effect " } element>markdown md-$snippet ;
@@ -240,6 +245,7 @@ CONSTANT: dollarsign-hash
         { $examples md-$examples }
         { $links md-$links }
         { $prettyprinting-note md-$prettyprinting-note }
+        { $predicate md-$predicate }
         { $url md-$url }
         { $definition md-$definition }
         { $strong md-$strong }

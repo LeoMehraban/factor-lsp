@@ -11,6 +11,7 @@ PREDICATE: lsp-message < hashtable "jsonrpc" of ;
 ERROR: not-implemented-yet ;
 ERROR: lsp-unexpected-eof ;
 ERROR: lsp-unreachable msg ;
+ERROR: likely-infinate-loop ;
 SYMBOL: lsp-should-log?
 SYMBOL: lsp-threaded-server
 SYMBOL: md-article-cache-count
@@ -91,7 +92,8 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : byte-cut* ( str i -- before after ) [ utf8 encode ] dip cut* [ utf8 decode ] bi@ ;
 
-: read-lsp-message ( start -- remainder obj/f ) 
+: read-lsp-message ( counter start -- counter remainder obj/f )
+    [ length 0 > [ 1 - ] [ drop 100 ] if ] keep over 0 <= [ likely-infinate-loop ] when
     dup [ unparse ] without-limits "start: " prepend log-lsp readln "\r\n" append append dup [ unparse ] without-limits "input-full: " prepend log-lsp dup "Content-Length: " subseq-index
     [ 
        "Content-Length: " length + cut dup "\r\n" subseq-index [ "there should always be a \\r\\n" lsp-unreachable ] unless*
@@ -149,7 +151,7 @@ M: word create-completion-item
 : string>factor-markup-content ( string -- markup-content ) [ "" ] unless* "value" "factor" "language" associate set-at* ;
 
 : get-current-word ( string position -- word ) 
-    dupd pos>index [ get-previous-word ] [ 1 + get-next-word ] 2bi append ;
+    dupd pos>index [ 1 - get-previous-word ] [ get-next-word ] 2bi append ;
 
 : get-current-word-range ( string position -- range ) dupd pos>index [ get-next-word-index "end" ] [ get-previous-word-index 1 + "start" associate ] 2bi set-at* ;
 
@@ -203,7 +205,7 @@ M: lsp-server errors-changed
         ! "~/lsp.log" utf8 [ "" write ] with-file-writer lsp-should-log?
         [ 
             [
-                "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer "" [ read-lsp-message [ swapd lsp-reply swap t ] [ t ] if* ] loop 2drop 
+                "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer 100 "" [ read-lsp-message [ rotd lsp-reply -rot t ] [ t ] if* ] loop 3drop 
             ] 
             [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp lsp-threaded-server get [ stop-server ] when* rethrow ] recover
         ] with-variable ;
@@ -301,9 +303,9 @@ LSP-METHOD: lsp-text-document-completion textDocument/completion
     [ swapd dupd [ swapd documents>> ] dip of ] dip get-current-word create-completion-items json-null <lsp-response> respond ;
 
 LSP-METHOD: lsp-completion-resolve completionItem/resolve 
-    [ "id" of ] [ "params" of [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip ] [ "params" of ] tri
-    [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "documentation" ] dip set-at* json-null <lsp-response> respond ;
-! 
+   [ "id" of ] [ "params" of [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip ] [ "params" of ] tri
+   [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "documentation" ] dip set-at* json-null <lsp-response> respond ;
+
 LSP-METHOD: lsp-diagnostics textDocument/diagnostic 
     [ "id" of ] 
     [ "params" of "textDocument" of "uri" of ] bi dup 
