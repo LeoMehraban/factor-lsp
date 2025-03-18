@@ -1,9 +1,11 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.help factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help ;
 
 IN: factor-lsp
+
+! TODO: nvim only sends one argument of multi-arg command
 
 GENERIC: lsp-reply ( server request -- server )
 GENERIC: lsp-command-reply ( server id params command -- server result/f )
@@ -12,11 +14,11 @@ ERROR: not-implemented-yet ;
 ERROR: lsp-unexpected-eof ;
 ERROR: lsp-unreachable msg ;
 ERROR: likely-infinate-loop ;
-SYMBOL: lsp-should-log?
+SYMBOL: lsp-logfile
 SYMBOL: lsp-threaded-server
 SYMBOL: md-article-cache-count
 
-: log-lsp ( string -- ) lsp-should-log? get [ "~/lsp.log" utf8 [ now [ "[" write hour>> pprint ] [ ":" write minute>> pprint "]" write ] bi print ] with-file-appender ] [ drop ] if ;
+: log-lsp ( string -- ) lsp-logfile get [ utf8 [ now [ "[" write hour>> pprint ] [ ":" write minute>> pprint "]" write ] bi print ] with-file-appender ] [ drop ] if* ;
 
 PREDICATE: lsp-notification < lsp-message "id" of not ;
 PREDICATE: lsp-response < lsp-message "result" of ;
@@ -75,11 +77,11 @@ CONSTANT: server-info H{ { "name" "factor-lsp" } { "version" "0.0.1" } }
 
 M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
-: create-lsp-message ( object -- string ) >json dup length >dec "Content-Length: " prepend "\r\n\r\n" append prepend ;
+: byte-length ( str -- len ) utf8 encode length ;
+
+: create-lsp-message ( object -- string ) >json dup byte-length >dec "Content-Length: " prepend "\r\n\r\n" append prepend ;
 
 : respond ( response -- ) create-lsp-message [ log-lsp ] [ write ] bi flush ;
-
-: byte-length ( str -- len ) utf8 encode length ;
 
 : byte-read ( n -- str ) input-stream get dup decoder? [ stream>> stream-read utf8 decode ] [ stream-read ] if ;
 
@@ -119,24 +121,29 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
         [ dup 133 = [ drop t ] [ 8232 8233 between? ] if ] if
     ] if ; inline
 
+: imported-vocabs ( document -- imports using-start using-end ) 
+    dup "USING: " subseq-index 
+    [ 
+        "USING: " length + over CHAR: ; swap index 
+        [ swapd [ [ dup length ] dip - ] [ 0 ] if* head* swap tail " \n\r" split harvest ] 2keep 
+    ]
+    [ drop { } f f ] if* ;
+
+: (make-vocab-change) ( vocab-to-add imports using-start using-end -- new using-start using-end ) 
+    [ 2nip [ swap vocab-name " " append ] keep rot ] 
+    [ [ [ swap vocab-name suffix " " join " ;\n" append dup length ] dip tuck + ] [ drop vocab-name "USING: " prepend " ;\n" append 0 0 ] if* ] if* ;
+
 : set-at* ( value key assoc -- assoc ) [ set-at ] keep ;
 : <lsp-request> ( id method params -- request ) "params" associate [ "method" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
 : <lsp-notification> ( method params -- notif ) "params" associate [ "method" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
 : <lsp-response> ( id result/f error/f -- response ) "error" associate [ "result" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at*  ;
-GENERIC: create-completion-item ( obj -- completion-item )
-M: class create-completion-item 
-    [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
-    [ "label" associate ] dip "detail" associate "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* ;
-M: word create-completion-item
-    [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
-    [ "label" associate ] dip "detail" associate "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* ;
-
-: create-completion-items ( str -- items ) words-matching dup length 10 >= [ 10 head ] when
-    [ first create-completion-item ] map ;
-
 : index-at-line-start ( string line-number -- index ) 0 -rot [ dup 0 > ] [ [ 2dup nth linebreak? ] dip swap [ 1 - ] when [ 1 + ] 2dip ] while 2drop ;
 
 : pos>index ( string position -- index ) [ "line" of index-at-line-start ] keep "character" of + ;
+
+: index>pos ( string index -- position ) 
+    [ split-lines ] dip over [ over [ dup length 1 > [ dup first length 1 + ] [ 0 <fp-nan> ] if ] dip <= ] [ unclip length 1 + swap [ - ] dip ] while swapd [ length ] bi@ -
+    "line" associate [ "character" ] dip set-at* ;
 
 : get-previous-word ( string index -- word ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 - ] dip ] collector [ while 2drop ] dip >string reverse ;
 
@@ -146,6 +153,35 @@ M: word create-completion-item
 
 : get-next-word-index ( string index -- index ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 + ] while nip  ;
 
+: <text-edit> ( text start end document -- text-edit ) tuck [ swap index>pos ] 2bi@ "end" associate [ "start" ] dip set-at* "range" associate [ "newText" ] dip set-at* ;
+
+: make-vocab-change ( vocab-to-add document -- text-edits ) 
+    over "syntax" = 
+    [ 2drop { } ] 
+    [ 
+        tuck imported-vocabs [ 2dup index ] 2dip rot 
+        [ 4drop drop { } ] 
+        [ 
+            (make-vocab-change) roll <text-edit> 1array
+        ] if 
+    ] if ;
+
+GENERIC: create-completion-item ( document obj -- completion-item )
+! text-edits completion-item
+M: class create-completion-item 
+    [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
+    [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip 
+    "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* ;
+M: word create-completion-item
+    [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
+    [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip
+    "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* ;
+
+: create-completion-items ( document str -- items ) 
+    dup length 0 > 
+    [ dup words-matching [ first name>> swap head? ] with filter [ dup ] H{ } map>assoc keys [ first create-completion-item ] with map ] 
+    [ 2drop { } ] if ;
+
 : send-message ( severity message -- ) [ "type" associate ] dip "message" rot set-at* "window/showMessage" swap <lsp-notification> respond ;
 
 : string>factor-markup-content ( string -- markup-content ) [ "" ] unless* "value" "factor" "language" associate set-at* ;
@@ -153,7 +189,7 @@ M: word create-completion-item
 : get-current-word ( string position -- word ) 
     dupd pos>index [ 1 - get-previous-word ] [ get-next-word ] 2bi append ;
 
-: get-current-word-range ( string position -- range ) dupd pos>index [ get-next-word-index "end" ] [ get-previous-word-index 1 + "start" associate ] 2bi set-at* ;
+: get-current-word-range ( string position -- range ) dupd pos>index [ dupd get-next-word-index index>pos "end" ] [ dupd get-previous-word-index 1 + index>pos "start" associate ] 2bi set-at* ;
 
 : first-word-with-name ( string -- word/f ) all-words [ name>> = ] with find nip ;
 ! /Users/leomehraban/factor/work/factor-lsp/factor-lsp.factor >> resource:work/factor-lsp/factor-lsp.factor
@@ -200,21 +236,24 @@ M: lsp-server errors-changed
 
 : filename>topic ( filename -- topic ) "-" split1 "," split1 drop swap string>topic ;
 
-: lsp-server-run ( do-logging? -- ) 
-        dup [ "~/lsp.log" utf8 [ "" write ] with-file-writer ] when lsp-should-log?
-        ! "~/lsp.log" utf8 [ "" write ] with-file-writer lsp-should-log?
+: lsp-server-run ( logfile/f -- ) 
+        dup [ utf8 [ "" write ] with-file-writer ] when* lsp-logfile
         [ 
             [
                 "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer 100 "" [ read-lsp-message [ rotd lsp-reply -rot t ] [ t ] if* ] loop 3drop 
             ] 
-            [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp lsp-threaded-server get [ stop-server ] when* rethrow ] recover
+            [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp rethrow ] recover
         ] with-variable ;
-! before-end start after-range
-: split-remove-range ( document range -- before-range after-range ) dupd [ "start" of pos>index ] [ "end" of pos>index ] 2bi swapd cut [ swap head ] dip ;
+
+: split-remove-range ( document range -- before-range after-range ) 
+    dupd [ "start" of pos>index ] [ "end" of ] bi pick split-lines length [ dup "line" of ] dip
+    < [ swapd dupd pos>index [ dup length ] dip min cut ] [ drop swap "" ] if [ swap [ dup length ] dip min head ] dip ;
 
 : apply-change ( document new-text range -- document ) swapd split-remove-range rot prepend append ;
 
-MAIN: [ t lsp-server-run ]
+: parse-command-line ( -- logfile/f ) command-line get dup length 0 > [ first ] [ drop f ] if ;
+
+MAIN: [ parse-command-line lsp-server-run ]
 
 
 ! I'm just gonna assume the client can do everything for now, and not check the capibilities
@@ -297,10 +336,9 @@ LSP-METHOD: lsp-text-document-definition textDocument/definition
         get-current-word first-word-with-name where 
         [ first2 [ absolute-path "file://" prepend ] [ full-line-range ] bi* "range" associate [ "uri" ] dip set-at* ] [ json-null ] if* json-null <lsp-response> respond 
         ;
-
 LSP-METHOD: lsp-text-document-completion textDocument/completion 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
-    [ swapd dupd [ swapd documents>> ] dip of ] dip get-current-word create-completion-items json-null <lsp-response> respond ;
+    [ swapd dupd [ swapd documents>> ] dip of ] dip dupd get-current-word create-completion-items json-null <lsp-response> respond ;
 
 LSP-METHOD: lsp-completion-resolve completionItem/resolve 
    [ "id" of ] [ "params" of [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip ] [ "params" of ] tri

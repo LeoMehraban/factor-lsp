@@ -1,14 +1,44 @@
-USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin help classes.predicate classes.singleton classes.tuple classes.union help.vocabs namespaces ;
+USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin help classes.predicate classes.singleton tools.completion classes.tuple classes.union help.vocabs help.apropos namespaces ;
 IN: factor-lsp.help
+
+! TODO: unsupported markup elements:
+! $title (help)
+! $recent (help.home)
+! $recent-searches (help.home)
+! $tip-of-the-day (help.tips)
+! $tip-title (help.tips)
+! $tips-of-the-day (help.tips)
+! $all-authors (help.vocabs)
+! $all-tags (help.vocabs)
+! $authored-vocabs (help.vocabs)
+! $authors (help.vocabs)
+! $tagged-vocabs (help.vocabs)
+! $tagged (help.vocabs)
+! $operation (ui.operations)
+! $2d-only-note (math.matrices.private)
+! $equiv-word-note (math.matrices.private)
+! $xml-error (xml.errors.private)
+! $finite-input-note (math.matrices.private)
+! $keep-shape-note (math.matrices.private)
+! $link2 (math.matrices.private)
+! $matrix-scalar-note (math.matrices.private)
+! $notelist (math.matrices.private)
+! $operations (ui.operations)
+! $subs-nobl (math.matrices.private)
+! $0-plurality (english.private)
+! $keep-case (english.private)
 
 DEFER: md-$link
 DEFER: md-$heading
 DEFER: md-$see
 DEFER: md-$see-also
+DEFER: md-$pretty-link
 DEFER: md-$table
 DEFER: md-$words
 DEFER: md-$values
 DEFER: md-$snippet
+DEFER: md-$completions
+DEFER: md-$subsection
 DEFER: dollarsign-hash
 SYMBOL: link-prefix
 SYMBOL: link-suffix
@@ -38,7 +68,7 @@ M: f link-address drop link-prefix get "/word-f,syntax" link-suffix get append a
 
 M: vocab-prefix article-title name>> ;
 
-: help-word? ( word -- ? ) dup word? [ [ vocabulary>> [ "help" = ] [ "help.markup" = ] [ "help.vocabs" = ] tri or or ] [ name>> first CHAR: $ = ] bi and ] [ drop f ] if ;
+: help-word? ( word -- ? ) dup word? [ [ vocabulary>> vocab-name "help" head? ] [ name>> first CHAR: $ = ] bi and ] [ drop f ] if ;
 
 : array-length-or-zero ( seq -- length ) dup array? [ length ] [ drop 0 ] if ;
 
@@ -52,9 +82,34 @@ MEMO: article>markdown ( article-name -- markdown )
 
 : ?nl ( -- ) building get dup length 0 > [ last CHAR: \n = [ "\n" % ] unless ] [ drop "\n" % ] if ;
 
+: md-$about ( element -- ) first vocab-help [ 1array md-$subsection ] when* ;
+:: md-(apropos) ( search completions category -- element )
+    completions [
+        [
+            { $heading search } , [
+                max-completions index-or-length head
+                keys \ md-$completions prefix ,
+            ] [
+                length max-completions >
+                [ { md-$link T{ more-completions f completions search category } } , ] when
+            ] bi
+        ] unless-empty
+    ] { } make ;
+: md-$apropos ( str -- )
+    first
+    [ dup words-matching word-result md-(apropos) ]
+    [ dup vocabs-matching vocabulary-result md-(apropos) ]
+    [ dup articles-matching article-result md-(apropos) ] tri
+    3array element>markdown ;
 : md-$breadcrumbs ( element -- ) dup length 0 > [ unclip-last [ "" [ [ 1array md-$link ] "" make " » " append append ] reduce ] dip [ 1array md-$link ] "" make append % ] [ drop ] if ;
 : md-$class-description ( element -- ) "Class Description" md-$heading element>markdown ;
 : md-$code ( element -- ) ?nl "```factor\n" % element>markdown "\n```" % ;
+: md-$completions ( element -- )
+    dup [ word? ] all?
+    [ words-table ] [
+        dup [ vocab-spec? ] all?
+        [ $vocabs ] [ [ \ md-$pretty-link swap 2array 1array ] map md-$table ] if
+    ] if ;
 ! : md-$content ( element -- )  ;
 : md-$contract ( element -- ) "Generic word contract" md-$heading element>markdown ;
 : md-$curious ( element -- ) "For the curious..." md-$heading element>markdown  ;
@@ -69,6 +124,7 @@ MEMO: article>markdown ( article-name -- markdown )
 : md-$examples ( element -- ) "Examples" md-$heading element>markdown ?nl ;
 : md-$heading ( element -- ) ?nl "## " % element>markdown ?nl ;
 : md-$image ( element -- ) drop "<image>\n" % ;
+: md-$index ( element -- ) first ( -- seq ) call-effect [ sort-articles [ \ md-$subsection swap 2array ] map element>markdown ] unless-empty ;
 : md-$inputs ( element -- ) "Inputs" md-$heading [ "None" % ] [ [ values-row ] map (article>markdown) md-$table ] if-empty ;
 : md-$instance ( element -- ) first dup word? [ dup name>> a/an % " " % 1array md-$link ] [ element>markdown ] if ;
 : md-$io-error ( children -- ) drop "Throws an error if the I/O operation fails." md-$errors ;
@@ -209,6 +265,8 @@ MEMO: article>markdown ( article-name -- markdown )
 CONSTANT: dollarsign-hash
     H{ 
         { $outputs md-$outputs }
+        { $apropos md-$apropos }
+        { $about md-$about }
         { $quotation md-$quotation }
         { $or md-$or }
         { $see-also md-$see-also }
@@ -220,6 +278,8 @@ CONSTANT: dollarsign-hash
         { $class-description md-$class-description }
         { $table md-$table }
         { $long-link md-$long-link }
+        { $index md-$index }
+        { $completions md-$completions }
         { $markup-example md-$markup-example }
         { $see md-$see }
         { $parsing-note md-$parsing-note }
