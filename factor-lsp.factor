@@ -1,12 +1,10 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help ;
 
 IN: factor-lsp
-
-! TODO: nvim only sends one argument of multi-arg command
-
+! TODO: doc-final editing maybe broken
 GENERIC: lsp-reply ( server request -- server )
 GENERIC: lsp-command-reply ( server id params command -- server result/f )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
@@ -155,15 +153,20 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : <text-edit> ( text start end document -- text-edit ) tuck [ swap index>pos ] 2bi@ "end" associate [ "start" ] dip set-at* "range" associate [ "newText" ] dip set-at* ;
 
+: vocabulary-of-file ( string -- vocab-name/f ) dup "IN: " subseq-index [ 4 + tail 0 get-next-word ] [ drop f ] if* ;
+
 : make-vocab-change ( vocab-to-add document -- text-edits ) 
     over "syntax" = 
     [ 2drop { } ] 
     [ 
-        tuck imported-vocabs [ 2dup index ] 2dip rot 
-        [ 4drop drop { } ] 
+        2dup vocabulary-of-file = not
         [ 
-            (make-vocab-change) roll <text-edit> 1array
-        ] if 
+            tuck imported-vocabs [ 2dup index ] 2dip rot 
+            [ 4drop drop { } ] 
+            [ 
+                (make-vocab-change) roll <text-edit> 1array
+            ] if 
+        ] [ 2drop { } ] if
     ] if ;
 
 GENERIC: create-completion-item ( document obj -- completion-item )
@@ -201,7 +204,6 @@ M: word create-completion-item
 
 ! too lazy to do precise diagnostics
 : full-line-range ( line# -- range ) [ "line" associate [ 0 "character" ] dip set-at* ] [ 1 - "line" associate [ 0 "character" ] dip set-at* "start" associate ] bi [ "end" ] dip set-at* ;
-: vocabulary-of-file ( string -- vocab-name/f ) dup "IN: " subseq-index [ 4 + tail 0 get-next-word ] [ drop f ] if* ;
 
 : load-file ( full-file-text -- ) 
     [ 
@@ -295,9 +297,9 @@ LSP-METHOD: lsp-signature-help textDocument/signatureHelp
 
 : (get-help) ( name -- markdown/f ) 
         { 
-            { [ dup words-matching length 0 > ] [ words-matching first first article>markdown ] }
-            { [ dup vocabs-matching length 0 > ] [ vocabs-matching first first article>markdown ] }
-            { [ dup articles-matching length 0 > ] [ articles-matching first first article>markdown ] }
+            { [ dup words-named length 0 > ] [ words-named first article>markdown ] }
+            { [ dup vocab-exists? ] [ article>markdown ] }
+            { [ dup articles get at ] [ articles get at article>markdown ] }
             [ drop f ]
         } cond
  ;
@@ -350,3 +352,4 @@ LSP-METHOD: lsp-diagnostics textDocument/diagnostic
     >url path>> resource-path 
     all-errors group-by-source-file 
     at swap [ [ { } ] unless* (send-diagnostics) "items" ] dip "uri" associate set-at* [ "full" "kind" ] dip set-at* json-null <lsp-response> respond ;
+
