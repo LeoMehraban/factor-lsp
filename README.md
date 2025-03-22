@@ -2,6 +2,8 @@
 # Basic Factor LSP
 
 This is a very buggy LSP for the factor programming language, in its very early stages (or maybe very late stages, if I end up abandoning this project)
+If you are using this, be prepared to debug issues with bad error messages (or sometimes none at all). 
+When reporting or debugging crashes, always make sure to look in the log file. Logging is disabled by default, but you can enable it by adding the name of the file as an input to the language server launch command
 
 ## Installation
 
@@ -9,11 +11,11 @@ Installing this LSP requires the [factor programming language](https://factorcod
 
 ## Features
 
-- At the moment, code completion is supported 
-- In addition, there is hover support, which allows for quick and easy viewing of the stack effects of words.
-- The buggiest feature at the moment is diagnostics, which is practically unusable and very unreliable. When it works, it's nice at least
-- Perhaps the most useful feature is signature help, which is hooked up to the the factor help system, and thus allows you to get on-demand documentation for words in markdown format.
-- There is some basic go-to-definition support. factor makes this easy by storing where every word is defined, but there probably are still problems with this
+- Code completion: shows the vocabulary and name of words, and automatically adds imports when they are missing
+- Signature help: shows the stack effects and vocabularies of all words with a name
+- Diagnostics: when working as intended, shows compiler errors (not lexer or parser errors, because Factor throws them when reading a file, instead of saving them to be read later on)
+- Hover: displays the documentation of words as markdown
+- Go-to-definition: goes to the file and location that a word is defined in. Does not work if that file has unsaved changes, mearly taking you to the location of the old definition 
 
 ## Problems
 
@@ -27,9 +29,7 @@ Oh god, where do I even start?
 
 ### Nvim
 
-Apperently I need to have 100 stars (according to their [CONTRIBUTING.md](https://github.com/neovim/nvim-lspconfig/blob/master/CONTRIBUTING.md)) on github to even contribute this LSP config to nvim-lspconfig.
-
-This means you have to configure this the hard way
+Apperently I need to have 100 stars (according to their [CONTRIBUTING.md](https://github.com/neovim/nvim-lspconfig/blob/master/CONTRIBUTING.md)) on github to even contribute this LSP config to nvim-lspconfig. This means you have to configure this the hard way
 
 I'm gonna assume you have an LSP setup that provides stuff like keybindings. I'm not going to explain how to set this up here, but if you've already used neovim language servers before, you already probably have these set up 
 
@@ -79,7 +79,7 @@ vim.api.nvim_create_autocmd('FileType', {
       		pattern = 'factor',
       		callback = function(ev)
                 local client = vim.lsp.start { 
-			    	cmd = {'path/to/factor', '-run=factor-lsp'},
+			    	cmd = {'path/to/factor', '-run=factor-lsp', '~/lsp.log'}, -- delete the last arg to disable logging. you should probably do this
                     root_dir = find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)), -- if you exclude find_factor_path, just delete this line as well			    
                     name = 'factor-lsp',
 				    offset_encoding = 'utf-8',
@@ -100,8 +100,8 @@ the solution to this requires extensive configuration
 To some extent, this problem can be solved with a simple revision to the call to vim.lsp.start:
 ```lua
 local client = vim.lsp.start { 
-	cmd = {vim.fs.dirname(vim.fs.dirname(find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)))) .. "/factor", '-run=factor-lsp', '~/lsp.log'},
-	root_dir = find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)),
+	cmd = {'path/to/factor', '-run=factor-lsp', '~/lsp.log'}, -- delete the last arg to disable logging. you should probably do this
+	root_dir = find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)), -- if you exclude find_factor_path, just delete this line as well	
 	name = 'factor-lsp',
 	offset_encoding = 'utf-8',
 	handlers = {
@@ -183,5 +183,7 @@ I suggest you look at your editor's lsp support to figure out how to deal with t
 I do have some specific comments about some editors below:
 
 - Writing vscode extensions makes me want to die, so support for it is not planned.
-- Support for Emacs is planned, I just haven't gotten around to it yet. Let's hope it's not that difficult
-- Same with regular vim
+- Support for Emacs is planned, I just haven't gotten around to it yet. Let's hope it's not that difficult. You could also just use the more feature-filled [FUEL](https://github.com/mcandre/fuel)
+- Same with regular vim (but you can't use FUEL of course)
+
+An editor not being on this list does not mean that it is entirely unsupported. the language server protocol was designed to be cross-editor, after all
