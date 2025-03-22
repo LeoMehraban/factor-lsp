@@ -128,7 +128,7 @@ M:: byte-array split-lines ( seq -- seq' )
     dup "USING: " subseq-index 
     [ 
         "USING: " length + over CHAR: ; swap index 
-        [ swapd [ [ dup length ] dip - ] [ 0 ] if* head* swap tail " \n\r" split harvest ] 2keep 
+        [ swapd [ [ dup length ] dip - ] [ 0 ] if* head* swap tail " \n\r" split [ >string ] map harvest ] 2keep 
     ]
     [ drop { } f f ] if* ;
 
@@ -168,7 +168,7 @@ M:: byte-array split-lines ( seq -- seq' )
     over "syntax" = 
     [ 2drop { } ] 
     [ 
-        2dup [ vocabulary-of-file = ] [ vocabulary-of-file ".private" append = ] bi or not
+        2dup [ vocabulary-of-file = ] [ vocabulary-of-file ".private" append = ] 2bi or not
         [ 
             tuck imported-vocabs [ 2dup index ] 2dip rot 
             [ 4drop drop { } ] 
