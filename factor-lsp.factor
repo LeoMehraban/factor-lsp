@@ -1,10 +1,10 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private ;
 
 IN: factor-lsp
-! TODO: doc-final editing maybe broken
+! TODO: something with offsets broken in unicode-heavy files
 GENERIC: lsp-reply ( server request -- server )
 GENERIC: lsp-command-reply ( server id params command -- server result/f )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
@@ -66,6 +66,7 @@ CONSTANT: server-capabilities
         ! { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
         { "textDocumentSync" 2 } ! INCREMENTAL
+        { "positionEncoding" "utf-8" }
         { "executeCommandProvider" H{ { "commands" { "article" } } } }
     }
 
@@ -77,6 +78,10 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : byte-length ( str -- len ) utf8 encode length ;
 
+: >utf8 ( str -- byte-array ) dup byte-array? [ utf8 encode ] unless ;
+
+: utf8> ( byte-array -- str ) dup byte-array? [ utf8 decode ] unless ;
+
 : create-lsp-message ( object -- string ) >json dup byte-length >dec "Content-Length: " prepend "\r\n\r\n" append prepend ;
 
 : respond ( response -- ) create-lsp-message [ log-lsp ] [ write ] bi flush ;
@@ -85,6 +90,14 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : read-check ( n -- string complete? ) dup byte-read tuck length = ;
 ! start + "Content-Length: " + num + "\r\n" + rest + actually-read
+
+M:: byte-array split-lines ( seq -- seq' )
+    seq length :> len V{ } clone 0
+    [ dup len < ] [
+        dup seq [ linebreak? ] find-from
+        [ len or [ seq subseq-unsafe suffix! ] [ 1 + ] bi ]
+        [ 13 eq? [ dup seq ?nth 10 eq? [ 1 + ] when ] when ] bi*
+    ] while drop { } like ; inline
 
 : log-byte-array ( byte-array prefix -- ) [ utf8 decode [ unparse ] without-limits ] dip prepend log-lsp ;
 
@@ -110,14 +123,6 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
         ] [ f ] if* 
     ] 
     [ f ] if* ;
-! stolen from splitting.private
-: linebreak? ( ch -- ? )
-    dup 31 <
-    [ dup 10 13 between? [ drop t ] [ 28 30 between? ] if ] [
-        dup 133 <
-        [ drop f ]
-        [ dup 133 = [ drop t ] [ 8232 8233 between? ] if ] if
-    ] if ; inline
 
 : imported-vocabs ( document -- imports using-start using-end ) 
     dup "USING: " subseq-index 
@@ -135,21 +140,25 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 : <lsp-request> ( id method params -- request ) "params" associate [ "method" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
 : <lsp-notification> ( method params -- notif ) "params" associate [ "method" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
 : <lsp-response> ( id result/f error/f -- response ) "error" associate [ "result" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at*  ;
-: index-at-line-start ( string line-number -- index ) 0 -rot [ dup 0 > ] [ [ 2dup nth linebreak? ] dip swap [ 1 - ] when [ 1 + ] 2dip ] while 2drop ;
+
+! TODO: find a way to fix that 1 +: it assumes the linebreak is only one character long
+: index-at-line-start ( string line-number -- index ) 
+    [ >utf8 split-lines ] dip 0 -rot [ dup 0 > ] 
+    [ 1 - [ unclip length swap [ + 1 + ] dip ] dip ] while 2drop ;
 
 : pos>index ( string position -- index ) [ "line" of index-at-line-start ] keep "character" of + ;
 
 : index>pos ( string index -- position ) 
-    [ split-lines ] dip over [ over [ dup length 1 > [ dup first length 1 + ] [ 0 <fp-nan> ] if ] dip <= ] [ unclip length 1 + swap [ - ] dip ] while swapd [ length ] bi@ -
+    [ >utf8 split-lines ] dip over [ over [ dup length 1 > [ dup first length 1 + ] [ 0 <fp-nan> ] if ] dip <= ] [ unclip length 1 + swap [ - ] dip ] while swapd [ length ] bi@ -
     "line" associate [ "character" ] dip set-at* ;
 
-: get-previous-word ( string index -- word ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 - ] dip ] collector [ while 2drop ] dip >string reverse ;
+: get-previous-word ( string index -- word ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 - ] dip ] collector [ while 2drop ] dip reverse utf8> ;
 
-: get-previous-word-index ( string index -- index ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 - ] while nip ;
+: get-previous-word-index ( string index -- index ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 - ] while nip ;
 
-: get-next-word ( string index -- word ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 + ] dip ] collector [ while 2drop ] dip >string  ;
+: get-next-word ( string index -- word ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 + ] dip ] collector [ while 2drop ] dip utf8>  ;
 
-: get-next-word-index ( string index -- index ) [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 + ] while nip  ;
+: get-next-word-index ( string index -- index ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 + ] while nip  ;
 
 : <text-edit> ( text start end document -- text-edit ) tuck [ swap index>pos ] 2bi@ "end" associate [ "start" ] dip set-at* "range" associate [ "newText" ] dip set-at* ;
 
@@ -159,7 +168,7 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
     over "syntax" = 
     [ 2drop { } ] 
     [ 
-        2dup vocabulary-of-file = not
+        2dup [ vocabulary-of-file = ] [ vocabulary-of-file ".private" append = ] bi or not
         [ 
             tuck imported-vocabs [ 2dup index ] 2dip rot 
             [ 4drop drop { } ] 
@@ -172,13 +181,18 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 GENERIC: create-completion-item ( document obj -- completion-item )
 ! text-edits completion-item
 M: class create-completion-item 
-    [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
-    [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip 
-    "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* ;
+    [ 
+        [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
+        [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip 
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* 
+    ] keep deprecated? 
+    [ [ { 1 } "tags" ] dip set-at* ] when ;
 M: word create-completion-item
-    [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
-    [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip
-    "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* ;
+    [
+        [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
+        [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* 
+    ] keep deprecated? [ [ { 1 } "tags" ] dip set-at* ] when ;
 
 : create-completion-items ( document str -- items ) 
     dup length 0 > 
@@ -218,12 +232,8 @@ M: word create-completion-item
 
 : send-diagnostics ( errors uri -- ) [ (send-diagnostics) "diagnostics" ] dip "uri" associate set-at* [ "textDocument/publishDiagnostics" ] dip <lsp-notification> respond ;
 
-: send-signatures ( id word-name -- ) 
-    words-named 
-    [ 
-        dup stack-effect unparse "label" associate 
-        [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "documentation" ] dip set-at*
-    ] map "signatures" associate json-null <lsp-response> respond ;
+: send-hover ( id word-name -- ) 
+    words-named dup length 0 > [ first article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "contents" associate ] [ drop json-null ] if json-null <lsp-response> respond ;
 
 M: lsp-server errors-changed 
     documents>> keys all-errors group-by-source-file [ [ dup >url path>> resource-path ] dip at [ swap send-diagnostics ] [ drop ] if* ] curry each ;
@@ -248,15 +258,13 @@ M: lsp-server errors-changed
         ] with-variable ;
 
 : split-remove-range ( document range -- before-range after-range ) 
-    dupd [ "start" of pos>index ] [ "end" of ] bi pick split-lines length [ dup "line" of ] dip
-    < [ swapd dupd pos>index [ dup length ] dip min cut ] [ drop swap "" ] if [ swap [ dup length ] dip min head ] dip ;
+    [ >utf8 dup ] dip [ "start" of pos>index ] [ "end" of ] bi pick split-lines length [ dup "line" of ] dip
+    < [ swapd dupd pos>index [ dup length ] dip min cut ] [ drop swap "" ] if [ swap [ dup length ] dip min head ] dip [ utf8> ] bi@ ;
 
 : apply-change ( document new-text range -- document ) swapd split-remove-range rot prepend append ;
 
 : parse-command-line ( -- logfile/f ) command-line get dup length 0 > [ first ] [ drop f ] if ;
-
 MAIN: [ parse-command-line lsp-server-run ]
-
 
 ! I'm just gonna assume the client can do everything for now, and not check the capibilities
 LSP-METHOD: lsp-initialize initialize 
@@ -282,16 +290,16 @@ LSP-NOTIF: lsp-did-close textDocument/didClose "params" of "textDocument" of "ur
 
 LSP-NOTIF: lsp-did-save textDocument/didSave "params" of "textDocument" of "uri" of over documents>> at load-file ;
 
-LSP-METHOD: lsp-hover textDocument/hover 
+LSP-METHOD: lsp-signature-help textDocument/signatureHelp
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
     [ swapd dupd [ swapd documents>> ] dip of ] dip 
-    [ get-current-word first-word-with-name [ [ stack-effect unparse ] [ vocabulary>> [ "IN: " prepend " " append ] [ "" ] if* ] bi prepend ] 
-    [ f ] if* string>factor-markup-content "contents" ] [ get-current-word-range "range" associate ] 2bi set-at* 
+    get-current-word words-named [ [ [ stack-effect unparse ] [ vocabulary>> [ "IN: " prepend " " append ] [ "" ] if* ] bi prepend ] [ f ] if* string>factor-markup-content "documentation" associate ] map
+    "signatures" associate
     json-null <lsp-response> respond ;
 ! server id document pos
-LSP-METHOD: lsp-signature-help textDocument/signatureHelp 
+LSP-METHOD: lsp-hover textDocument/hover
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
-    [ swapd dupd [ swapd documents>> ] dip of ] dip [ get-current-word send-signatures ] 
+    [ swapd dupd [ swapd documents>> ] dip of ] dip [ get-current-word send-hover ] 
     [ 3drop f ] if*
     ;
 
@@ -316,6 +324,11 @@ LSP-METHOD: lsp-signature-help textDocument/signatureHelp
     
 
 : inc-md-article-cache-count ( -- str ) md-article-cache-count [ [ 0 ] initialize ] [ get >dec ] [ [ 1 + ] change ] tri ;
+
+: make-call-hierarchy-item ( uri range word -- item ) 
+    -rot [ { [ name>> "name" ] [ class? 5 12 ? "kind" ] [ deprecated? { 1 } { } ? "tags" ] } cleave ] 2dip
+    swap [ "range" over "selectionRange" ] dip "uri" associate set-at* set-at* set-at* set-at* set-at*
+    ;
 ! ( server id params command -- server result/f )
 ! server id+1 "window/showDocument" H{ { "uri" url } }
 LSP-COMMAND: lsp-article article
@@ -336,7 +349,8 @@ LSP-METHOD: lsp-text-document-definition textDocument/definition
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
     [ swapd dupd [ swapd documents>> ] dip of ] dip 
         get-current-word first-word-with-name where 
-        [ first2 [ absolute-path "file://" prepend ] [ full-line-range ] bi* "range" associate [ "uri" ] dip set-at* ] [ json-null ] if* json-null <lsp-response> respond 
+        [ first2 [ absolute-path "file://" prepend ] [ full-line-range ] bi* "range" associate [ "uri" ] dip set-at* ] [ json-null ] if* 
+        string>factor-markup-content "documentation" associate json-null <lsp-response> respond 
         ;
 LSP-METHOD: lsp-text-document-completion textDocument/completion 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
@@ -352,4 +366,11 @@ LSP-METHOD: lsp-diagnostics textDocument/diagnostic
     >url path>> resource-path 
     all-errors group-by-source-file 
     at swap [ [ { } ] unless* (send-diagnostics) "items" ] dip "uri" associate set-at* [ "full" "kind" ] dip set-at* json-null <lsp-response> respond ;
-
+! server id uri range word
+! LSP-METHOD: lsp-prepare-call-hierarchy textDocument/prepareCallHierarchy
+!    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
+!    [ swapd dupd [ swapd documents>> ] dip [ of ] keepd ] dip swapd [ get-current-word-range ] [ get-current-word ] 2bi
+!    words-named dup length 0 >
+!    [ first make-call-hierarchy-item ]
+!    [ 3drop json-null json-null <lsp-response> respond ] if
+!    ;
