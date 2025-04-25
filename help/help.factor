@@ -1,4 +1,4 @@
-USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin help classes.predicate classes.singleton tools.completion classes.tuple classes.union help.vocabs help.apropos namespaces io.files io.encodings.utf8 ui.operations ui.gestures ui.commands english.private xml.errors.private math.matrices.private sequences.generalizations math.parser help.home help.tips ;
+USING: sequences make kernel math splitting tools.annotations continuations io arrays strings vocabs combinators words quotations prettyprint prettyprint.sections urls help.topics effects accessors help.markup assocs see io.streams.string tools.annotations.private compiler.units classes generic macros sorting words.symbol sequences.deep vocabs.metadata vocabs.loader vocabs.hierarchy classes.builtin classes.intersection classes.mixin help classes.predicate classes.singleton tools.completion classes.tuple classes.union help.vocabs help.apropos namespaces io.files io.encodings.utf8 ui.operations ui.gestures ui.commands english.private xml.errors.private math.matrices.private sequences.generalizations math.parser help.home help.tips vectors combinators.short-circuit ;
 IN: factor-lsp.help
 
 
@@ -33,12 +33,14 @@ ERROR: printing-not-handled ;
 
 : non-executable-word? ( word -- ? ) [ symbol? ] [ class? ] bi or ;
 
+: %string ( string --  ) % ; ! [ dup { [ CHAR: * = ] [ CHAR: | = ] [ CHAR: < = ] [ CHAR: > = ] } 1|| [ CHAR: \\ , ] when , ] each ;
+
 M: array element>markdown 
     unclip dup help-word? [ dollarsign-hash at ] when dup non-executable-word? [ unparse prefix [ element>markdown ] each ] [ ( arg -- ) execute-effect ] if ; inline
 M: effect element>markdown effect>string % ; inline
 M: f element>markdown % ; inline
 M: simple-element element>markdown [ element>markdown ] each ; inline
-M: string element>markdown % ; inline
+M: string element>markdown %string ; inline
 M: word element>markdown 
     { } swap dup help-word? [ dollarsign-hash at ] when dup non-executable-word? [ unparse prefix element>markdown ] [ ( arg -- ) execute-effect ] if ; inline
 
@@ -116,7 +118,7 @@ MEMO: article>markdown ( article-name -- markdown )
     3array element>markdown ;
 : md-$breadcrumbs ( element -- ) dup length 0 > [ unclip-last [ "" [ [ 1array md-$link ] "" make " » " append append ] reduce ] dip [ 1array md-$link ] "" make append % ] [ drop ] if ;
 : md-$class-description ( element -- ) "Class Description" md-$heading element>markdown ;
-: md-$code ( element -- ) ?nl "```factor\n" % element>markdown "\n```" % ;
+: md-$code ( element -- ) ?nl "```factor\n" % dup [ array? ] [ vector? ] bi or [ 1array ] unless join-lines element>markdown "\n```\n" % ;
 : md-$completions ( element -- )
     dup [ word? ] all?
     [ words-table ] [
@@ -355,6 +357,7 @@ MEMO: article>markdown ( article-name -- markdown )
 ! so that we don't end up with multiple $notes calls leading to multiple Notes sections
 : md-$notelist ( children -- )
     \ md-$list prefix md-$notes ;
+
 
 
 

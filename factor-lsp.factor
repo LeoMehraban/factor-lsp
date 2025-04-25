@@ -263,7 +263,7 @@ M: word create-completion-item
         dup [ utf8 [ "" write ] with-file-writer ] when* lsp-logfile
         [ 
             [
-                "lsp started" log-lsp H{ } clone f <lsp-server> dup add-error-observer 100 "" [ read-lsp-message [ rotd lsp-reply -rot t ] [ t ] if* ] loop 3drop 
+                "lsp started" log-lsp H{ } clone f <lsp-server> 100 "" [ read-lsp-message [ rotd lsp-reply -rot t ] [ t ] if* ] loop 3drop 
             ] 
             [ "lsp crashed" log-lsp dup unparse log-lsp error-continuation get unparse log-lsp rethrow ] recover
         ] with-variable ;
