@@ -1,10 +1,11 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string ;
 
 IN: factor-lsp
-! TODO: something with offsets broken in unicode-heavy files
+! TODO: fix sound-changer.factor
+! TODO: why is completion so slow?
 GENERIC: lsp-reply ( server request -- server )
 GENERIC: lsp-command-reply ( server id params command -- server result/f )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
@@ -139,7 +140,8 @@ M:: byte-array split-lines ( seq -- seq' )
 : set-at* ( value key assoc -- assoc ) [ set-at ] keep ;
 : <lsp-request> ( id method params -- request ) "params" associate [ "method" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
 : <lsp-notification> ( method params -- notif ) "params" associate [ "method" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at* ;
-: <lsp-response> ( id result/f error/f -- response ) "error" associate [ "result" ] dip set-at* [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at*  ;
+: <lsp-response> ( id result/f error/f -- response ) 
+        [ "error" associate ] [ H{ } clone ] if* [ "result" ] dip over [ set-at* ] [ 2nip ] if [ "id" ] dip set-at* [ "2.0" "jsonrpc" ] dip set-at*  ;
 
 ! TODO: find a way to fix that 1 +: it assumes the linebreak is only one character long
 : index-at-line-start ( string line-number -- index ) 
@@ -147,6 +149,7 @@ M:: byte-array split-lines ( seq -- seq' )
     [ 1 - [ unclip length swap [ + 1 + ] dip ] dip ] while 2drop ;
 
 : pos>index ( string position -- index ) [ "line" of index-at-line-start ] keep "character" of + ;
+
 
 : index>pos ( string index -- position ) 
     [ >utf8 split-lines ] dip over [ over [ dup length 1 > [ dup first length 1 + ] [ 0 <fp-nan> ] if ] dip <= ] [ unclip length 1 + swap [ - ] dip ] while swapd [ length ] bi@ -
@@ -178,26 +181,33 @@ M:: byte-array split-lines ( seq -- seq' )
         ] [ 2drop { } ] if
     ] if ;
 
-GENERIC: create-completion-item ( document obj -- completion-item )
-! text-edits completion-item
+GENERIC: create-completion-item ( obj -- completion-item )
+
 M: class create-completion-item 
     [ 
         [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
-        [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip 
-        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* 
+        [ "label" associate ] dip "detail" associate
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at*
     ] keep deprecated? 
     [ [ { 1 } "tags" ] dip set-at* ] when ;
 M: word create-completion-item
     [
         [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
-        [ "label" associate ] dip "detail" associate [ [ swap make-vocab-change ] keep ] 2dip
-        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* [ "additionalTextEdits" ] dip set-at* 
+        [ "label" associate ] dip "detail" associate 
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at*
     ] keep deprecated? [ [ { 1 } "tags" ] dip set-at* ] when ;
 
-: create-completion-items ( document str -- items ) 
+: create-completion-items ( uri str -- items ) 
     dup length 0 > 
-    [ dup words-matching [ first name>> swap head? ] with filter [ dup ] H{ } map>assoc keys [ first create-completion-item ] with map ] 
+    [ dup words-matching [ first name>> swap head? ] with filter [ dup ] H{ } map>assoc keys [ first create-completion-item [ "data" ] dip set-at* ] with map ] 
     [ 2drop { } ] if ;
+! item word 
+
+: resolve-completion-item ( document item -- item ) 
+    dup [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip
+    [ vocabulary>> vocab-name -rot [ make-vocab-change "additionalTextEdits" ] dip set-at* ] keep article>markdown "value" associate [ "markdown" "kind" ] dip set-at* 
+    "documentation" rot set-at*
+     ; 
 
 : send-message ( severity message -- ) [ "type" associate ] dip "message" rot set-at* "window/showMessage" swap <lsp-notification> respond ;
 
@@ -221,7 +231,8 @@ M: word create-completion-item
 
 : load-file ( full-file-text -- ) 
     [ 
-        vocabulary-of-file [ [ require ] [ refresh ] [ "loaded vocabulary: " prepend 3 swap send-message ] tri ] [ 2 "failed to load file because of: " rot unparse append send-message drop ] recover 
+        vocabulary-of-file [ [ require ] [ refresh ] [ "loaded vocabulary: " prepend 3 swap send-message ] tri ] 
+        [ 2 "failed to load file because of: " rot [ error. ] with-string-writer append send-message drop ] recover 
     ] curry future drop ;
 
 : (send-diagnostics) ( errors -- diagnostics ) [ 
@@ -233,10 +244,10 @@ M: word create-completion-item
 : send-diagnostics ( errors uri -- ) [ (send-diagnostics) "diagnostics" ] dip "uri" associate set-at* [ "textDocument/publishDiagnostics" ] dip <lsp-notification> respond ;
 
 : send-hover ( id word-name -- ) 
-    words-named dup length 0 > [ first article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "contents" associate ] [ drop json-null ] if json-null <lsp-response> respond ;
+    words-named dup length 0 > [ first article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "contents" associate ] [ drop json-null ] if f <lsp-response> respond ;
 
-M: lsp-server errors-changed 
-    documents>> keys all-errors group-by-source-file [ [ dup >url path>> resource-path ] dip at [ swap send-diagnostics ] [ drop ] if* ] curry each ;
+! M: lsp-server errors-changed 
+!   documents>> keys all-errors group-by-source-file [ [ dup >url path>> resource-path ] dip at [ swap send-diagnostics ] [ drop ] if* ] curry each ;
 
 : string>topic ( string type -- topic/f ) {
             { "word" [ words-matching first first ] }
@@ -269,15 +280,15 @@ MAIN: [ parse-command-line lsp-server-run ]
 ! I'm just gonna assume the client can do everything for now, and not check the capibilities
 LSP-METHOD: lsp-initialize initialize 
     "id" of 
-    H{ { "capabilities" $[ server-capabilities ] } { "serverInfo" $[ server-info ] } } clone json-null <lsp-response> respond 
+    H{ { "capabilities" $[ server-capabilities ] } { "serverInfo" $[ server-info ] } } clone f <lsp-response> respond 
     "initialized" json-null <lsp-notification> respond t >>initialized? 3 "factor-lsp loaded" send-message ;
 
-LSP-METHOD: lsp-shutdown shutdown "id" of json-null json-null <lsp-response> respond ;
+LSP-METHOD: lsp-shutdown shutdown "id" of json-null f <lsp-response> respond ;
 
 LSP-METHOD: lsp-exit exit not-implemented-yet ;
 
 LSP-METHOD: lsp-command workspace/executeCommand 
-    [ "id" of dup ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply [ json-null <lsp-response> respond ] [ drop ] if* ;
+    [ "id" of dup ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply [ f <lsp-response> respond ] [ drop ] if* ;
 
 LSP-NOTIF: lsp-open-doc textDocument/didOpen 
     "params" of "textDocument" of [ swap [ [ "text" of ] [ "uri" of dup >url path>> resource-path path>source-file unparse log-lsp ] bi over load-file ] dip set-at* ] curry change-documents ;
@@ -350,27 +361,30 @@ LSP-METHOD: lsp-text-document-definition textDocument/definition
     [ swapd dupd [ swapd documents>> ] dip of ] dip 
         get-current-word first-word-with-name where 
         [ first2 [ absolute-path "file://" prepend ] [ full-line-range ] bi* "range" associate [ "uri" ] dip set-at* ] [ json-null ] if* 
-        string>factor-markup-content "documentation" associate json-null <lsp-response> respond 
+        string>factor-markup-content "documentation" associate f <lsp-response> respond 
         ;
+
+! server id uri document pos
 LSP-METHOD: lsp-text-document-completion textDocument/completion 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
-    [ swapd dupd [ swapd documents>> ] dip of ] dip dupd get-current-word create-completion-items json-null <lsp-response> respond ;
+    [ swapd dupd [ swapd documents>> ] dip [ of ] keep swap ] dip get-current-word create-completion-items f <lsp-response> respond ;
 
 LSP-METHOD: lsp-completion-resolve completionItem/resolve 
-   [ "id" of ] [ "params" of [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip ] [ "params" of ] tri
-   [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "documentation" ] dip set-at* json-null <lsp-response> respond ;
+    [ "id" of ] [ "params" of "data" of ] [ "params" of ] tri
+    [ swapd dupd [ swapd documents>> ] dip of ] dip resolve-completion-item f <lsp-response> respond ;
 
 LSP-METHOD: lsp-diagnostics textDocument/diagnostic 
     [ "id" of ] 
     [ "params" of "textDocument" of "uri" of ] bi dup 
     >url path>> resource-path 
     all-errors group-by-source-file 
-    at swap [ [ { } ] unless* (send-diagnostics) "items" ] dip "uri" associate set-at* [ "full" "kind" ] dip set-at* json-null <lsp-response> respond ;
+    at swap [ [ { } ] unless* (send-diagnostics) "items" ] dip "uri" associate set-at* [ "full" "kind" ] dip set-at* f <lsp-response> respond ;
 ! server id uri range word
 ! LSP-METHOD: lsp-prepare-call-hierarchy textDocument/prepareCallHierarchy
 !    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
 !    [ swapd dupd [ swapd documents>> ] dip [ of ] keepd ] dip swapd [ get-current-word-range ] [ get-current-word ] 2bi
 !    words-named dup length 0 >
 !    [ first make-call-hierarchy-item ]
-!    [ 3drop json-null json-null <lsp-response> respond ] if
+!    [ 3drop json-null f <lsp-response> respond ] if
 !    ;
+
