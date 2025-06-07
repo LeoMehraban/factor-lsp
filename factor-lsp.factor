@@ -5,7 +5,6 @@ USING: accessors assocs calendar classes.parser classes.predicate combinators co
 
 IN: factor-lsp
 ! TODO: fix sound-changer.factor
-! TODO: why is completion so slow?
 GENERIC: lsp-reply ( server request -- server )
 GENERIC: lsp-command-reply ( server id params command -- server result/f )
 PREDICATE: lsp-message < hashtable "jsonrpc" of ;
@@ -128,7 +127,7 @@ M:: byte-array split-lines ( seq -- seq' )
 : imported-vocabs ( document -- imports using-start using-end ) 
     dup "USING: " subseq-index 
     [ 
-        "USING: " length + over CHAR: ; swap index 
+        "USING: " length + 2dup tail CHAR: ; swap index dupd + 
         [ swapd [ [ dup length ] dip - ] [ 0 ] if* head* swap tail " \n\r" split [ >string ] map harvest ] 2keep 
     ]
     [ drop { } f f ] if* ;
@@ -291,7 +290,7 @@ LSP-METHOD: lsp-command workspace/executeCommand
     [ "id" of dup ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply [ f <lsp-response> respond ] [ drop ] if* ;
 
 LSP-NOTIF: lsp-open-doc textDocument/didOpen 
-    "params" of "textDocument" of [ swap [ [ "text" of ] [ "uri" of dup >url path>> resource-path path>source-file unparse log-lsp ] bi over load-file ] dip set-at* ] curry change-documents ;
+    "params" of "textDocument" of [ swap [ [ "text" of ] [ "uri" of dup >url path>> resource-path >string path>source-file unparse log-lsp ] bi over load-file ] dip set-at* ] curry change-documents ;
 
 LSP-NOTIF: lsp-did-change textDocument/didChange 
     "params" of [ "contentChanges" of ] [ "textDocument" of "uri" of ] bi 
