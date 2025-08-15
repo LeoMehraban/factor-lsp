@@ -1,7 +1,7 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs ;
 
 IN: factor-lsp
 ! TODO: fix sound-changer.factor
@@ -14,6 +14,7 @@ ERROR: lsp-unreachable msg ;
 ERROR: likely-infinate-loop ;
 SYMBOL: lsp-logfile
 SYMBOL: lsp-threaded-server
+SYMBOL: client-capabilities
 SYMBOL: md-article-cache-count
 
 : log-lsp ( string -- ) lsp-logfile get [ utf8 [ now [ "[" write hour>> pprint ] [ ":" write minute>> pprint "]" write ] bi print ] with-file-appender ] [ drop ] if* ;
@@ -57,7 +58,7 @@ SYNTAX: LSP-COMMAND:
 
 CONSTANT: server-capabilities 
     H{ 
-        { "completionProvider" H{ { "labelDetailsSupport" t } } }
+        { "completionProvider" H{ { "labelDetailsSupport" t } { "resolveProvider" t } } }
         ! { "declarationProvider" f } ! for now
         { "definitionProvider" t } ! for now
         ! { "implementationProvider" f } ! for now
@@ -78,9 +79,9 @@ M: lsp-notification lsp-reply "method" of "did not handle: " prepend log-lsp ;
 
 : byte-length ( str -- len ) utf8 encode length ;
 
-: >utf8 ( str -- byte-array ) dup byte-array? [ utf8 encode ] unless ;
+MEMO: >utf8 ( str -- byte-array ) dup string? [ utf8 encode ] when ;
 
-: utf8> ( byte-array -- str ) dup byte-array? [ utf8 decode ] unless ;
+MEMO: utf8> ( byte-array -- str ) dup string? [ utf8 decode ] unless ;
 
 : create-lsp-message ( object -- string ) >json dup byte-length >dec "Content-Length: " prepend "\r\n\r\n" append prepend ;
 
@@ -147,7 +148,7 @@ M:: byte-array split-lines ( seq -- seq' )
     [ >utf8 split-lines ] dip 0 -rot [ dup 0 > ] 
     [ 1 - [ unclip length swap [ + 1 + ] dip ] dip ] while 2drop ;
 
-: pos>index ( string position -- index ) [ "line" of index-at-line-start ] keep "character" of + ;
+MEMO: pos>index ( string position -- index ) [ "line" of index-at-line-start ] keep "character" of + ;
 
 
 : index>pos ( string index -- position ) 
@@ -157,7 +158,7 @@ M:: byte-array split-lines ( seq -- seq' )
 : get-previous-word ( string index -- word ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 - ] dip ] collector [ while 2drop ] dip reverse utf8> ;
 
 : get-previous-word-index ( string index -- index ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 - ] while nip ;
-
+! byte-array index
 : get-next-word ( string index -- word ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 2dup swap nth [ 1 + ] dip ] collector [ while 2drop ] dip utf8>  ;
 
 : get-next-word-index ( string index -- index ) [ >utf8 ] dip [ 2dup swap ?nth [ blank? not ] [ f ] if* ] [ 1 + ] while nip  ;
@@ -184,28 +185,62 @@ GENERIC: create-completion-item ( obj -- completion-item )
 
 M: class create-completion-item 
     [ 
-        [ vocabulary>> vocab-name ] [ name>> ] [ superclass-of ] tri 
+        { 
+            ! [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* ] 
+            [ vocabulary>> vocab-name ] 
+            [ name>> ] 
+            [ superclass-of ] 
+        } cleave
         [ "label" associate ] dip "detail" associate
-        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at*
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* ! [ "documentation" ] dip set-at*
     ] keep deprecated? 
     [ [ { 1 } "tags" ] dip set-at* ] when ;
+
 M: word create-completion-item
     [
-        [ vocabulary>> vocab-name ] [ name>> ] [ stack-effect effect>string ] tri 
+        { 
+            ! [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* ] 
+            [ vocabulary>> vocab-name ] 
+            [ name>> ] 
+            [ stack-effect effect>string ] 
+        } cleave
         [ "label" associate ] dip "detail" associate 
-        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at*
+        "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* ! [ "documentation" ] dip set-at*
     ] keep deprecated? [ [ { 1 } "tags" ] dip set-at* ] when ;
 
 : create-completion-items ( uri str -- items ) 
     dup length 0 > 
-    [ dup words-matching [ first name>> swap head? ] with filter [ dup ] H{ } map>assoc keys [ first create-completion-item [ "data" ] dip set-at* ] with map ] 
+    [ dup words-matching [ first name>> swap head? ] with filter [ first create-completion-item [ "data" ] dip set-at* ] with map ] 
     [ 2drop { } ] if ;
-! item word 
+! item word
+: create-vocab-completion-items ( str -- items ) 
+    dup length 0 > 
+    [ 
+        dup vocabs-matching 
+        [ first vocab-name swap head? ] with filter 
+        [ 
+            first vocab-name 
+            ! [ vocab>markdown "value" associate [ "markdown" "kind" ] dip set-at* ] 
+            ! [ 
+                "label" associate [ 9 "kind" ] dip set-at* 
+            ! ] bi [ "documentation" ] dip set-at*
+        ] map 
+    ] 
+    [ drop { } ] if ;
 
 : resolve-completion-item ( document item -- item ) 
-    dup [ "detail" of ] [ "label" of ] bi words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip
-    [ vocabulary>> vocab-name -rot [ make-vocab-change "additionalTextEdits" ] dip set-at* ] keep article>markdown "value" associate [ "markdown" "kind" ] dip set-at* 
-    "documentation" rot set-at*
+    dup "kind" of 9 =
+    [ 
+        nip dup "label" of vocab>markdown "value" associate [ "markdown" "kind" ] dip set-at* "documentation" rot set-at*
+    ]
+    [ 
+        ! [ "detail" of make-vocab-change "additionalTextEdits" ] keep set-at*
+        dup [ "detail" of ] [ "label" of ] bi 
+        words-named [ vocabulary>> dup string? not [ unparse ] when = ] with find nip
+        [ vocabulary>> vocab-name -rot [ make-vocab-change "additionalTextEdits" ] dip set-at* ] keep
+        article>markdown "value" associate [ "markdown" "kind" ] dip set-at* 
+        "documentation" rot set-at*
+    ] if
      ; 
 
 : send-message ( severity message -- ) [ "type" associate ] dip "message" rot set-at* "window/showMessage" swap <lsp-notification> respond ;
@@ -218,6 +253,72 @@ M: word create-completion-item
 : get-current-word-range ( string position -- range ) dupd pos>index [ dupd get-next-word-index index>pos "end" ] [ dupd get-previous-word-index 1 + index>pos "start" associate ] 2bi set-at* ;
 
 : first-word-with-name ( string -- word/f ) all-words [ name>> = ] with find nip ;
+
+: tail= ( string tail -- ? ) [ length tail* ] keep over like = ; inline
+
+: tail=-and-rest ( string tail -- before ? ) [ length cut* ] keep over like = ; inline
+
+: (strict-tail=) ( before ? -- ? ) [ dup length 0 > [ last { CHAR: \s CHAR: \n CHAR: \r } index ] [ drop t ] if ] [ drop f ] if ; inline
+
+: strict-tail= ( string tail -- ? ) tail=-and-rest (strict-tail=) ; inline
+
+: remove-trailing-whitespace ( string -- string ) 
+    >sbuf [ dup length 0 > [ dup last { CHAR: \s CHAR: \n CHAR: \r } index [ [ pop drop ] keep t ] [ f ] if ] [ f ] if ] loop >string ;
+
+DEFER: no-char-tail=
+
+: (no-char-tail=) ( before ? -- ? ) [ remove-trailing-whitespace { [ "CHAR:" strict-tail= ] [ "\\" no-char-tail= ] } 1|| not ] [ drop f ] if ;
+
+: no-char-tail= ( string tail -- ? ) tail=-and-rest (no-char-tail=) ; inline
+
+: strict-no-char-tail= ( string tail -- ? ) tail=-and-rest dupd (strict-tail=) (no-char-tail=) ; inline
+
+
+:: in-word-terminated-expression? ( str word terminator limit -- ? ) 
+       str >sbuf 0 :> chars-removed! 
+       [ chars-removed limit > [ f ] [ dup length 0 > [ dup [ terminator no-char-tail= ] [ word strict-no-char-tail= ] bi or not ] [ f ] if ] if ]
+       [ [ pop drop ] keep chars-removed 1 + chars-removed! ] while 
+       word strict-no-char-tail= ; inline 
+
+: in-word-semicolon-expression? ( str word -- ? ) ";" 400 in-word-terminated-expression? ;
+
+: in-word-oparen-expression? ( str word -- ? ) "(" 100 in-word-terminated-expression? ;
+
+:: in-word-no-semicolon-expression? ( str word -- ? )
+    str dup length 0 > [
+        dup dup length 1 - get-previous-word-index dup 0 > [ head ] [ drop ] if
+        remove-trailing-whitespace
+        word strict-no-char-tail=
+    ]
+    [ drop f ] if
+    ; inline
+
+TYPED: in-use-expression? ( str: string -- ?: boolean ) { [ "USE:" in-word-no-semicolon-expression? ] [ "USING:" in-word-semicolon-expression? ] } 1|| ;
+
+TYPED: in-word-name-expression? ( str: string -- ?: boolean ) ! syntax with a new word name (and so it should not recieve completion suggestions)
+    { 
+        [ "SYMBOL:" in-word-no-semicolon-expression? ] 
+        [ "SYMBOLS:" in-word-semicolon-expression? ] 
+        [ "SINGLETON:" in-word-no-semicolon-expression? ] 
+        [ "SINGLETONS:" in-word-semicolon-expression? ]
+        [ "DEFER:" in-word-no-semicolon-expression? ]
+        [ "TUPLE:" in-word-semicolon-expression? ]
+        [ "ERROR:" in-word-semicolon-expression? ]
+        [ "IN:" in-word-no-semicolon-expression? ]
+        [ ":" in-word-oparen-expression? ]
+        [ "::" in-word-oparen-expression? ]
+        [ "TYPED:" in-word-oparen-expression? ]
+        [ "TYPED::" in-word-oparen-expression? ]
+        [ "GENERIC:" in-word-oparen-expression? ]
+    } 1|| ;
+TYPED: get-current-completion-items ( uri: string string: union{ string byte-array } position -- items )
+    2dup pos>index overd head utf8>
+    { 
+        { [ dup in-use-expression? ] [ drop get-current-word nip create-vocab-completion-items ] }
+        ! { [ dup in-word-name-expression? ] [ 4drop { } ] }
+        [ drop get-current-word create-completion-items ] 
+    } cond ;
+
 ! /Users/leomehraban/factor/work/factor-lsp/factor-lsp.factor >> resource:work/factor-lsp/factor-lsp.factor
 : resource-path ( path -- resource-path ) 
     [ 
@@ -242,11 +343,12 @@ M: word create-completion-item
 
 : send-diagnostics ( errors uri -- ) [ (send-diagnostics) "diagnostics" ] dip "uri" associate set-at* [ "textDocument/publishDiagnostics" ] dip <lsp-notification> respond ;
 
-: send-hover ( id word-name -- ) 
-    words-named dup length 0 > [ first article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "contents" associate ] [ drop json-null ] if f <lsp-response> respond ;
+: send-hover ( id word-name vocab? -- ) 
+    [ vocab-name 1array ] [ words-named ] if 
+    dup length 0 > [ first article>markdown "value" associate [ "markdown" "kind" ] dip set-at* "contents" associate ] [ drop json-null ] if f <lsp-response> respond ;
 
-! M: lsp-server errors-changed 
-!   documents>> keys all-errors group-by-source-file [ [ dup >url path>> resource-path ] dip at [ swap send-diagnostics ] [ drop ] if* ] curry each ;
+M: lsp-server errors-changed 
+   documents>> keys all-errors group-by-source-file [ [ dup >url path>> resource-path ] dip at [ swap send-diagnostics ] [ drop ] if* ] curry each ;
 
 : string>topic ( string type -- topic/f ) {
             { "word" [ words-matching first first ] }
@@ -278,7 +380,7 @@ MAIN: [ parse-command-line lsp-server-run ]
 
 ! I'm just gonna assume the client can do everything for now, and not check the capibilities
 LSP-METHOD: lsp-initialize initialize 
-    "id" of 
+    [ "id" of ] [ "capabilities" of client-capabilities set-global ] bi
     H{ { "capabilities" $[ server-capabilities ] } { "serverInfo" $[ server-info ] } } clone f <lsp-response> respond 
     "initialized" json-null <lsp-notification> respond t >>initialized? 3 "factor-lsp loaded" send-message ;
 
@@ -306,11 +408,14 @@ LSP-METHOD: lsp-signature-help textDocument/signatureHelp
     get-current-word words-named [ [ [ stack-effect unparse ] [ vocabulary>> [ "IN: " prepend " " append ] [ "" ] if* ] bi prepend ] [ f ] if* string>factor-markup-content "documentation" associate ] map
     "signatures" associate
     json-null <lsp-response> respond ;
-! server id document pos
 LSP-METHOD: lsp-hover textDocument/hover
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
-    [ swapd dupd [ swapd documents>> ] dip of ] dip [ get-current-word send-hover ] 
-    [ 3drop f ] if*
+    [ swapd dupd [ swapd documents>> ] dip of ] dip 
+    ! [
+        get-current-word 
+    ! ] 
+    ! [ dupd pos>index head in-use-expression? ] 2bi 
+    f send-hover
     ;
 
 : (get-help) ( name -- markdown/f ) 
@@ -366,7 +471,7 @@ LSP-METHOD: lsp-text-document-definition textDocument/definition
 ! server id uri document pos
 LSP-METHOD: lsp-text-document-completion textDocument/completion 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri 
-    [ swapd dupd [ swapd documents>> ] dip [ of ] keep swap ] dip get-current-word create-completion-items f <lsp-response> respond ;
+    [ swapd dupd [ swapd documents>> ] dip [ of ] keep swap ] dip get-current-completion-items f <lsp-response> respond ;
 
 LSP-METHOD: lsp-completion-resolve completionItem/resolve 
     [ "id" of ] [ "params" of "data" of ] [ "params" of ] tri

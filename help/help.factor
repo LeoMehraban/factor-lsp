@@ -17,8 +17,8 @@ DEFER: md-$snippet
 DEFER: md-$completions
 DEFER: md-$subsection
 DEFER: dollarsign-hash
-SYMBOL: link-prefix
-SYMBOL: link-suffix
+INITIALIZED-SYMBOL: link-prefix [ "https://docs.factorcode.org/content" ]
+INITIALIZED-SYMBOL: link-suffix [ ".html" ]
 GENERIC: element>markdown ( element -- )
 
 ERROR: printing-not-handled ;
@@ -70,6 +70,7 @@ M: vocab-prefix article-title name>> ;
 MEMO: article>markdown ( article-name -- markdown )
     [ article-content (article>markdown) ] keep [ article-name "# " prepend % "\n" % element>markdown ] curry "" make ; inline
 
+MEMO: vocab>markdown ( vocab-name -- markdown ) vocab-words [ md-$words ] "" make ;
 
 : test-generation ( topic -- ? ) 
     [ [ article>markdown ] with-string-writer "" = [ printing-not-handled ] unless drop t ] 
