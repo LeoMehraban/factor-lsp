@@ -316,6 +316,7 @@ TYPED: get-current-completion-items ( uri: string string: union{ string byte-arr
     { 
         { [ dup in-use-expression? ] [ drop get-current-word nip create-vocab-completion-items ] }
         ! { [ dup in-word-name-expression? ] [ 4drop { } ] }
+        { [ dup "!" "\n" 100 in-word-terminated-expression? ] [ 4drop { } ] }
         [ drop get-current-word create-completion-items ] 
     } cond ;
 
