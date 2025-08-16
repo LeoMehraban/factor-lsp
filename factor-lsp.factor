@@ -189,7 +189,7 @@ M: class create-completion-item
             ! [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* ] 
             [ vocabulary>> vocab-name ] 
             [ name>> ] 
-            [ superclass-of ] 
+            [ superclass-of dup word? [ name>> ] when " " prepend ] 
         } cleave
         [ "label" associate ] dip "detail" associate
         "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 7 "kind" ] dip set-at* ! [ "documentation" ] dip set-at*
@@ -202,7 +202,7 @@ M: word create-completion-item
             ! [ article>markdown "value" associate [ "markdown" "kind" ] dip set-at* ] 
             [ vocabulary>> vocab-name ] 
             [ name>> ] 
-            [ stack-effect effect>string ] 
+            [ stack-effect effect>string " " prepend ] 
         } cleave
         [ "label" associate ] dip "detail" associate 
         "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* ! [ "documentation" ] dip set-at*
@@ -314,9 +314,9 @@ TYPED: in-word-name-expression? ( str: string -- ?: boolean ) ! syntax with a ne
 TYPED: get-current-completion-items ( uri: string string: union{ string byte-array } position -- items )
     2dup pos>index overd head utf8>
     { 
-        { [ dup in-use-expression? ] [ drop get-current-word nip create-vocab-completion-items ] }
+        ! { [ dup in-use-expression? ] [ drop get-current-word nip create-vocab-completion-items ] }
         ! { [ dup in-word-name-expression? ] [ 4drop { } ] }
-        { [ dup "!" "\n" 100 in-word-terminated-expression? ] [ 4drop { } ] }
+        ! { [ dup "!" "\n" 100 in-word-terminated-expression? ] [ 4drop { } ] }
         [ drop get-current-word create-completion-items ] 
     } cond ;
 
