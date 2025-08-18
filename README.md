@@ -15,15 +15,15 @@ Installing this LSP requires the [factor programming language](https://factorcod
 - Signature help: shows the stack effects and vocabularies of all words with a name
 - Diagnostics: when working as intended, shows compiler errors (not lexer or parser errors, because Factor throws them when reading a file, instead of saving them to be read later on)
 - Hover: displays the documentation of words as markdown
-- Go-to-definition: goes to the file and location that a word is defined in. Does not work if that file has unsaved changes, mearly taking you to the location of the old definition 
+- Go-to-implementation: goes to the file and location that a word is defined in. Does not work if that file has unsaved changes, mearly taking you to the location of the old definition 
+- References: works, with the same caveats as go-to-implementation. It may miss out on certain references due to limitations with factor's `usage` word
 
 ## Problems
 
 Oh god, where do I even start?
 - First of all, when you open a file, it takes several seconds for the LSP to load.
-- Diagnostics appear sometimes, but it's so unreliable that it's just annoying when it happens.
-- Editor support is hard to configure, and your editor's defaults probably won't work or won't work well.
-- There are other problems, but since they are likely nvim-specific, I'll save those for the editor support section.
+- Diagnostics appear sometimes, but it's so unreliable that it's just annoying when it happens. Because of this, it's turned off by default
+- There is an abundence of bugs and crashes that I just haven't experienced yet
 
 ## Editor Support
 
@@ -90,91 +90,8 @@ vim.api.nvim_create_autocmd('FileType', {
             end,
 })
 ```
-
-There is a minor problems with just having this: code blocks in markdown that have been sent over by the LSP will not display with factor syntax highlighting, which is annoying for both hovering and signature help
-
-the solution to this requires extensive configuration
-
-#### The solution to that
-
-To some extent, this problem can be solved with a simple revision to the call to vim.lsp.start:
-```lua
-local client = vim.lsp.start { 
-	cmd = {'path/to/factor', '-run=factor-lsp', '~/lsp.log'}, -- delete the last arg to disable logging. you should probably do this
-	root_dir = find_factor_folder(vim.api.nvim_buf_get_name(ev.buf)), -- if you exclude find_factor_path, just delete this line as well	
-	name = 'factor-lsp',
-	offset_encoding = 'utf-8',
-	handlers = {
-		["textDocument/hover"] = function(err, result, ctx, config)
-			if result then
-				local content = result.contents.value
-				if content then
-					local bufnr, winnr = vim.lsp.util.open_floating_preview({content}, "markdown")
-					vim.api.nvim_set_option_value("modifiable", true, {buf=bufnr})
-					vim.api.nvim_win_call(winnr, function() vim.treesitter.stop(bufnr) end)
-					vim.lsp.util.stylize_markdown(bufnr, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), {})
-					vim.api.nvim_set_option_value("modifiable", false, {buf=bufnr})
-				end
-			end
-		end,
-		["textDocument/signatureHelp"] = function(err, result, ctx, config)
-			if result then
-				local i = 1
-				local lines = 0
-				local content = ''
-				local content_language = ''
-				local greatest_valuelen = 0
-			    while i <= #result.signatures do
-					local sig = result.signatures[i].documentation
-					content_language = sig.language
-					local valuelen = string.len(sig.value or '')							   	 
-					if valuelen > 0 then
-						local option_string = " ! option " .. i .. '\n'
-						if #result.signatures == 1 then option_string = '\n' end 
-						content = content .. sig.value .. option_string
-						lines = lines + 1
-					    if #content > greatest_valuelen then greatest_valuelen = #content end
-					end
-					i = i + 1
-				end
-				if #content > 0 then
-					vim.lsp.util.open_floating_preview(
-						split_by_lines(content), 
-						content_language, 
-						vim.lsp.util.make_floating_popup_options(greatest_valuelen, lines, {})
-					)
-				end
-			end
-		end				
-    }
-}
-```
-
-this essentially overwrites the handling of some messages sent by factor-lsp. 
-the first handler gets the response to the message sent by the server, then opens a floating window with markdown highlighting. 
-`open_floating_preview` uses treesitter to parse the markdown, which is one of the things causing problem two in the first place, so you need to turn it off as a next step. 
-Lastly, you need to call `stylize_markdown`, which sets lines in code blocks to use the correct syntax highlighting.
-
-Unfortunatly, this solution has one major flaw: it makes links really long. For some reason, while the creator of the markdown syntax file created a setting to conceal most markdown formatting when you aren't on the particular line with that formatting, they didn't make this apply to links. The reason why this is a flaw with this method, and not just with vim markdown support in general, is because the treesitter syntax file, which had to be disabled, includes this feature. 
-I have submitted a pull request to the vim-markdown github repo where the syntax file is stored to attempt to resolve this, but even if it is accepted there, it still has to make its way into vim, then nvim, then finally nvim stable. Until that happens (if it even does), you can manually solve this problem. 
-First, go into your nvim runtime file folder. mine is at /opt/homebrew/Cellar/neovim/0.10.4/share/nvim/runtime, but this will vary quite a bit based on how you installed neovim in the first place.
-Then, open runtime/syntax/markdown.vim and delete lines 103-104. After that, delete lines starting from 107, and going down to the line that says `exe 'syn region markdownItalic...`.
-Then, copy and paste this in its place:
-
-```vimscript
-let s:concealends = ''
-let s:conceal = ''
-if has('conceal') && get(g:, 'markdown_syntax_conceal', 1) == 1
-  let s:concealends = ' concealends'
-  let s:conceal = ' conceal'
-endif
-exe 'syn region markdownLinkText matchgroup=markdownLinkTextDelimiter start="!\=\[\%(\_[^][]*\%(\[\_[^][]*\]\_[^][]*\)*]\%( \=[[(]\)\)\@=" end="\]\%( \=[[(]\)\@=" nextgroup=markdownLink,markdownId skipwhite contains=@markdownInline,markdownLineStart' . s:concealends
-" the destination of a link should be fully concealed
-exe 'syn region markdownLink matchgroup=markdownLinkDelimiter start="(" end=")" contains=markdownUrl keepend contained' . s:conceal
-```
-essentially, this just adds `conceal` and `concealends` to particular parts of a link when the `markdown_syntax_conceal` option is set to 1
-
-the second handler is more complex because it needs to handle multiple different signatures that the server sends, but in terms of actual displaying, it's much simpler, just creating a window with the correct highlighing
+### Sublime Text
+Sublime Text has been confirmed to work out of the box
 
 ### Others
 

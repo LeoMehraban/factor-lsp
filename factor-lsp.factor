@@ -1,7 +1,7 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs ;
+USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs tools.crossref ;
 
 IN: factor-lsp
 ! TODO: fix sound-changer.factor
@@ -59,13 +59,13 @@ SYNTAX: LSP-COMMAND:
 CONSTANT: server-capabilities 
     H{ 
         { "completionProvider" H{ { "labelDetailsSupport" t } { "resolveProvider" t } } }
-        ! { "declarationProvider" f } ! for now
-        { "definitionProvider" t } ! for now
-        ! { "implementationProvider" f } ! for now
-        ! { "referencesProvider" f } ! for now
+        { "declarationProvider" f } ! for now
+        ! { "definitionProvider" t } ! for now
+        { "implementationProvider" t }
         { "signatureHelpProvider" H{ } }
         ! { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
+        { "referencesProvider" t }
         { "textDocumentSync" 2 } ! INCREMENTAL
         { "positionEncoding" "utf-8" }
         { "executeCommandProvider" H{ { "commands" { "article" } } } }
@@ -492,4 +492,24 @@ LSP-METHOD: lsp-diagnostics textDocument/diagnostic
 !    [ first make-call-hierarchy-item ]
 !    [ 3drop json-null f <lsp-response> respond ] if
 !    ;
-
+: methods-of ( generic -- methods ) dup dispatch-order [ swap ?lookup-method ] with map sift ;
+LSP-METHOD: lsp-go-to-implementation textDocument/implementation 
+    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
+    [ swapd dupd [ swapd documents>> ] dip of ] dip get-current-word words-named
+    { } [ dup generic? [ [ methods-of ] keep prefix append ] [ suffix ] if ] reduce
+    [ 
+        where
+        [ 
+            [ first absolute-path "file://" prepend ] [ last full-line-range "range" associate ] bi
+            [ "uri" ] dip set-at*
+        ] [ json-null ] if* 
+    ] map f <lsp-response> respond ;
+LSP-METHOD: lsp-see-references textDocument/references
+    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
+    [ swapd dupd [ swapd documents>> ] dip of ] dip get-current-word words-named first usage
+    [ 
+        where [ 
+            [ first absolute-path "file://" prepend ] [ last full-line-range dup "targetRange" associate [ "targetSelectionRange" ] dip set-at* ] bi
+            [ "targetUri" ] dip set-at*
+        ] [ f ] if*  
+    ] map sift f <lsp-response> respond ;
