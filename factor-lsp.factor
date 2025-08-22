@@ -1,7 +1,7 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs tools.crossref ;
+USING: accessors assocs calendar eval classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs tools.crossref stack-checker tools.test ;
 
 IN: factor-lsp
 ! TODO: fix sound-changer.factor
@@ -66,9 +66,10 @@ CONSTANT: server-capabilities
         ! { "diagnosticProvider" H{ { "interFileDependencies" t } { "workspaceDiagnostics" f } } }
         { "hoverProvider" t }
         { "referencesProvider" t }
+        { "codeActionProvider" t }
         { "textDocumentSync" 2 } ! INCREMENTAL
         { "positionEncoding" "utf-8" }
-        { "executeCommandProvider" H{ { "commands" { "article" } } } }
+        { "executeCommandProvider" H{ { "commands" { "article" "infer" } } } }
     }
 
 CONSTANT: server-info H{ { "name" "factor-lsp" } { "version" "0.0.1" } }
@@ -208,10 +209,23 @@ M: word create-completion-item
         "labelDetails" rot set-at* [ "detail" ] dip set-at* [ 3 "kind" ] dip set-at* ! [ "documentation" ] dip set-at*
     ] keep deprecated? [ [ { 1 } "tags" ] dip set-at* ] when ;
 
-: create-completion-items ( uri str -- items ) 
+: (create-completion-items) ( uri str -- items ) 
     dup length 0 > 
     [ dup words-matching [ first name>> swap head? ] with filter [ first create-completion-item [ "data" ] dip set-at* ] with map ] 
     [ 2drop { } ] if ;
+
+: create-vocab-words-completion-items ( uri word range -- items )
+    [ dup ":" split1 swap lookup-vocab ] dip swap 
+    [
+        swap [ nipd vocab-words [ name>> swap head? ] with filter ] dip 
+        [
+            [ create-completion-item [ "data" ] dip set-at* ] dip "range" associate [ dup "label" of "newText" ] dip set-at* swap [ "textEdit" ] dip set-at*
+        ] curry with map 
+    ] 
+    [ drop nip (create-completion-items) ] if* ;
+
+: create-completion-items ( uri str range -- items ) 
+    over CHAR: : swap index [ create-vocab-words-completion-items ] [ drop (create-completion-items) ] if ;
 ! item word
 : create-vocab-completion-items ( str -- items ) 
     dup length 0 > 
@@ -250,7 +264,7 @@ M: word create-completion-item
 : get-current-word ( string position -- word ) 
     dupd pos>index [ 1 - get-previous-word ] [ get-next-word ] 2bi append ;
 
-: get-current-word-range ( string position -- range ) dupd pos>index [ dupd get-next-word-index index>pos "end" ] [ dupd get-previous-word-index 1 + index>pos "start" associate ] 2bi set-at* ;
+: get-current-word-range ( string position -- range ) dupd pos>index [ dupd get-next-word-index index>pos "end" ] [ dupd 1 - get-previous-word-index 1 + index>pos "start" associate ] 2bi set-at* ;
 
 : first-word-with-name ( string -- word/f ) all-words [ name>> = ] with find nip ;
 
@@ -317,7 +331,7 @@ TYPED: get-current-completion-items ( uri: string string: union{ string byte-arr
         ! { [ dup in-use-expression? ] [ drop get-current-word nip create-vocab-completion-items ] }
         ! { [ dup in-word-name-expression? ] [ 4drop { } ] }
         ! { [ dup "!" "\n" 100 in-word-terminated-expression? ] [ 4drop { } ] }
-        [ drop get-current-word create-completion-items ] 
+        [ drop [ get-current-word ] [ get-current-word-range ] 2bi create-completion-items ] 
     } cond ;
 
 ! /Users/leomehraban/factor/work/factor-lsp/factor-lsp.factor >> resource:work/factor-lsp/factor-lsp.factor
@@ -373,6 +387,10 @@ M: lsp-server errors-changed
 : split-remove-range ( document range -- before-range after-range ) 
     [ >utf8 dup ] dip [ "start" of pos>index ] [ "end" of ] bi pick split-lines length [ dup "line" of ] dip
     < [ swapd dupd pos>index [ dup length ] dip min cut ] [ drop swap "" ] if [ swap [ dup length ] dip min head ] dip [ utf8> ] bi@ ;
+
+: get-contents-of-range ( document range -- content ) 
+    dupd [ "start" of pos>index ] [ "end" of pos>index over - ] 2bi
+    [ tail ] [ head ] bi* ;
 
 : apply-change ( document new-text range -- document ) swapd split-remove-range rot prepend append ;
 
@@ -460,6 +478,11 @@ LSP-COMMAND: lsp-article article
     ] 
     [ "usage: article <search-term>" <lsp-invalid-params-error> json-null swap <lsp-response> respond f ] if*
     ;
+LSP-COMMAND: lsp-infer infer 
+    drop first2 
+    [ swapd dupd [ swapd documents>> ] dip of ] dip get-contents-of-range nip
+    [ parse-string infer effect>string 3 swap "Effect: " prepend send-message ] [ 1 concise-summary "Could not infer due to: \n" prepend send-message drop ] recover
+    json-null ;
 ! server id document position
 LSP-METHOD: lsp-text-document-definition textDocument/definition 
     [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "position" of ] tri
@@ -513,3 +536,7 @@ LSP-METHOD: lsp-see-references textDocument/references
             [ "targetUri" ] dip set-at*
         ] [ f ] if*  
     ] map sift f <lsp-response> respond ;
+LSP-METHOD: lsp-code-action textDocument/codeAction
+    [ "id" of ] [ "params" of "textDocument" of "uri" of ] [ "params" of "range" of ] tri
+    "Infer Stack Effect" "title" associate [ 2array "arguments" associate [ "infer-stack-effect" "title" ] dip set-at* [ "infer" "command" ] dip set-at* "command" ] dip set-at*
+    1array f <lsp-response> respond ;
