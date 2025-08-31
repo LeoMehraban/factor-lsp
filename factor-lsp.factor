@@ -1,7 +1,7 @@
 ! Copyright (C) 2025 Your name.
 ! See https://factorcode.org/license.txt for BSD license.
 
-USING: accessors assocs calendar eval classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs tools.crossref stack-checker tools.test ;
+USING: accessors assocs calendar eval classes.parser classes.predicate combinators concurrency.futures continuations definitions effects factor-lsp.types generic hashtables help.apropos io io.encodings io.encodings.string io.encodings.utf8 io.files io.files.temp io.pathnames io.servers json kernel literals make math math.order math.parser namespaces parser present prettyprint prettyprint.config quotations sequences source-files source-files.errors splitting arrays help.topics command-line stack-checker.errors strings classes summary tools.completion unicode urls vocabs vocabs.loader vocabs.refresh words factor-lsp.help byte-arrays sequences.private splitting.private debugger io.streams.string combinators.short-circuit typed sbufs tools.crossref stack-checker tools.test vocabs.parser vocabs.private ;
 
 IN: factor-lsp
 ! TODO: fix sound-changer.factor
@@ -213,9 +213,8 @@ M: word create-completion-item
     dup length 0 > 
     [ dup words-matching [ first name>> swap head? ] with filter [ first create-completion-item [ "data" ] dip set-at* ] with map ] 
     [ 2drop { } ] if ;
-
 : create-vocab-words-completion-items ( uri word range -- items )
-    [ dup ":" split1 swap lookup-vocab ] dip swap 
+    [ dup ":" split1 swap dup valid-vocab-name? [ lookup-vocab ] [ drop f ] if ] dip swap 
     [
         swap [ nipd vocab-words [ name>> swap head? ] with filter ] dip 
         [
@@ -241,7 +240,7 @@ M: word create-completion-item
         ] map 
     ] 
     [ drop { } ] if ;
-
+ 
 : resolve-completion-item ( document item -- item ) 
     dup "kind" of 9 =
     [ 
@@ -408,7 +407,7 @@ LSP-METHOD: lsp-shutdown shutdown "id" of json-null f <lsp-response> respond ;
 LSP-METHOD: lsp-exit exit not-implemented-yet ;
 
 LSP-METHOD: lsp-command workspace/executeCommand 
-    [ "id" of dup ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply [ f <lsp-response> respond ] [ drop ] if* ;
+    [ "id" of tuck ] [ "params" of "arguments" of ] [ "params" of "command" of ] tri lsp-command-reply swapd [ f <lsp-response> respond ] [ drop ] if* ;
 
 LSP-NOTIF: lsp-open-doc textDocument/didOpen 
     "params" of "textDocument" of [ swap [ [ "text" of ] [ "uri" of dup >url path>> resource-path >string path>source-file unparse log-lsp ] bi over load-file ] dip set-at* ] curry change-documents ;
@@ -479,9 +478,9 @@ LSP-COMMAND: lsp-article article
     [ "usage: article <search-term>" <lsp-invalid-params-error> json-null swap <lsp-response> respond f ] if*
     ;
 LSP-COMMAND: lsp-infer infer 
-    drop first2 
-    [ swapd dupd [ swapd documents>> ] dip of ] dip get-contents-of-range nip
-    [ parse-string infer effect>string 3 swap "Effect: " prepend send-message ] [ 1 concise-summary "Could not infer due to: \n" prepend send-message drop ] recover
+    drop first2 [ nip over documents>> at ] dip get-contents-of-range
+    [ eval:parse-string infer effect>string 3 swap "Effect: " prepend send-message ] 
+    [ concise-summary 1 swap "Could not infer due to: \n" prepend send-message drop error-continuation get call>> [ callstack. ] with-string-writer log-lsp ] recover
     json-null ;
 ! server id document position
 LSP-METHOD: lsp-text-document-definition textDocument/definition 
